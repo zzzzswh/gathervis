@@ -1,6 +1,7 @@
 README.md
 pyproject.toml
 gathervis/__init__.py
+gathervis/__main__.py
 gathervis/core.py
 gathervis/demo.py
 gathervis/process.py
@@ -8,6 +9,7 @@ gathervis/viewer.py
 gathervis.egg-info/PKG-INFO
 gathervis.egg-info/SOURCES.txt
 gathervis.egg-info/dependency_links.txt
+gathervis.egg-info/entry_points.txt
 gathervis.egg-info/requires.txt
 gathervis.egg-info/top_level.txt
 tests/test_core.py

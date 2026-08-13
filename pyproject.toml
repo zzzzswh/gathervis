@@ -4,7 +4,7 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "gathervis"
-version = "0.1.0"
+version = "0.2.0"
 description = "Interactive pre-stack seismic gather viewer for Python / GPU servers"
 readme = "README.md"
 license = { text = "MIT" }
@@ -13,18 +13,25 @@ dependencies = [
     "numpy>=1.22",
     "panel>=1.3",
     "bokeh>=3.3",
-    "torch>=2.8.0",
+    "torch>=2.4.0,<2.11",    # <2.11: newer cu13x builds drop V100 (CC 7.0) kernels
     "deepwave>=0.0.27",
 ]
 
-[project.optional-dependencies]
-examples = ["deepwave"]          # pulls torch
-dev = ["pytest"]
-
-[tool.setuptools.packages.find]
-include = ["gathervis*"]
+# Make the cu121 index actually take effect: with explicit=true an index is
+# only used for packages pinned to it via tool.uv.sources.
+[tool.uv.sources]
+torch = { index = "pytorch-cu121" }
 
 [[tool.uv.index]]
 name = "pytorch-cu121"
 url = "https://download.pytorch.org/whl/cu121"
 explicit = true
+
+[project.scripts]
+gathervis = "gathervis.__main__:main"
+
+[project.optional-dependencies]
+dev = ["pytest"]
+
+[tool.setuptools.packages.find]
+include = ["gathervis*"]

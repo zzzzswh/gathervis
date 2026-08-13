@@ -1,0 +1,2 @@
+[console_scripts]
+gathervis = gathervis.__main__:main

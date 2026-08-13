@@ -6,8 +6,12 @@ every view:
   * view_gather      -- a single (trace, time) panel
   * SliceView        -- 3 orthogonal slices of a volume (cigvis-style)
   * ShotBrowser      -- slider over the shot axis (2-D panel or per-shot SliceView)
-  * acquisition_app  -- layout map (tap a source) linked to a ShotBrowser
+  * LayoutMap        -- acquisition map with tap-to-pick-a-shot
+  * Workspace        -- sidebar (dataset info + display controls) + view tabs
   * show()           -- dispatcher; serves in a browser (SSH port-forward friendly)
+
+All components are plain objects exposing bokeh figures / panel layouts, so
+power users can also compose their own dashboards with pn.Row / pn.Column.
 """
 from __future__ import annotations
 
@@ -187,28 +191,28 @@ class SliceView:
 
 
 class ShotBrowser:
-    """Slider over the shot axis; each shot is a 2-D panel or a 3-D SliceView."""
+    """Slider over the shot axis; each shot is a 2-D panel or a 3-D SliceView.
 
-    def __init__(self, g: Gathers, cmap="seismic", perc=98.0):
+    ``state`` is a shared dict holding 'clim' (and 'sample'), owned by the
+    Workspace so all views stay consistent.
+    """
+
+    def __init__(self, g: Gathers, state: dict, cmap="seismic"):
         _ensure_ext()
-        self.g = g
-        self.state = {"sample": g.sample(), "clim": None}
-        self.state["clim"] = robust_clim(self.state["sample"], perc)
+        self.g, self.state = g, state
         self._per_shot_3d = g.data.ndim == 4
-
         if self._per_shot_3d:
             self.sv = SliceView(g.shot(0), names=g.axes[1:3], dt=g.dt, t0=g.t0,
-                                cmap=cmap, clim=self.state["clim"])
-            panes = self.sv.panes
+                                cmap=cmap, clim=state["clim"])
+            self.panes = self.sv.panes
         else:
             self.pane = ImagePane(xlabel=g.axes[1], cmap=cmap)
-            panes = [self.pane]
+            self.panes = [self.pane]
 
         self.w_shot = pn.widgets.IntSlider(name="shot", start=0, end=g.nshot - 1,
                                            value=0, sizing_mode="stretch_width")
         self.w_shot.param.watch(lambda e: self.redraw(), "value")
-        self.controls = _display_controls(self.state, panes, self.redraw, cmap, perc)
-        self._on_shot_change = None  # hook for the acquisition map
+        self.on_shot_change = None      # hook: called with the new shot index
         self.redraw()
 
     @property
@@ -216,7 +220,7 @@ class ShotBrowser:
         return int(self.w_shot.value)
 
     def set_shot(self, i: int):
-        self.w_shot.value = int(i)  # triggers redraw via watcher
+        self.w_shot.value = int(i)      # triggers redraw via watcher
 
     def redraw(self):
         if self._per_shot_3d:
@@ -225,86 +229,235 @@ class ShotBrowser:
         else:
             self.pane.update(self.g.shot(self.ishot), self.state["clim"],
                              y0=self.g.t0, dy=self.g.dt)
-        if self._on_shot_change is not None:
-            self._on_shot_change(self.ishot)
+        if self.on_shot_change is not None:
+            self.on_shot_change(self.ishot)
 
     def panel(self):
         body = self.sv.panel() if self._per_shot_3d else self.pane.figure
-        return pn.Column(pn.Row(self.w_shot, self.controls), body,
-                         sizing_mode="stretch_width")
+        return pn.Column(self.w_shot, body, sizing_mode="stretch_width")
 
 
-def acquisition_app(g: Gathers, cmap="seismic", perc=98.0):
-    """Layout map (tap a source point) linked to a shot browser."""
-    _ensure_ext()
-    geo = g.geometry
-    browser = ShotBrowser(g, cmap=cmap, perc=perc)
+class LayoutMap:
+    """Acquisition map: sources are tappable; active shot + receivers highlighted."""
 
-    fig = figure(height=520, sizing_mode="stretch_width", match_aspect=True,
-                 x_axis_label="x", y_axis_label="y", title="acquisition layout",
-                 tools="pan,wheel_zoom,box_zoom,reset", active_scroll="wheel_zoom")
-    fig.toolbar.logo = None
-    rec_all = geo.rec.reshape(-1, 3)
-    fig.scatter(rec_all[:, 0], rec_all[:, 1], size=3, color="#9aa0a6",
-                alpha=0.6, legend_label="receivers")
-    cds_src = ColumnDataSource(dict(x=geo.src[:, 0], y=geo.src[:, 1]))
-    r_src = fig.scatter("x", "y", source=cds_src, size=7, color="#d93025",
-                        legend_label="sources",
-                        nonselection_alpha=0.5, selection_color="#fbbc04")
-    cds_arec = ColumnDataSource(dict(x=[], y=[]))
-    cds_asrc = ColumnDataSource(dict(x=[], y=[]))
-    fig.scatter("x", "y", source=cds_arec, size=4, color="#1a73e8")
-    fig.scatter("x", "y", source=cds_asrc, size=14, color="#fbbc04", marker="star")
-    fig.add_tools(TapTool(renderers=[r_src]))
-    fig.legend.location = "top_right"
+    def __init__(self, geo):
+        _ensure_ext()
+        self.geo = geo
+        self.on_pick = None             # hook: called with the picked shot index
+        fig = figure(height=420, sizing_mode="stretch_width", match_aspect=True,
+                     x_axis_label="x", y_axis_label="y",
+                     tools="pan,wheel_zoom,box_zoom,reset,tap",
+                     active_scroll="wheel_zoom")
+        fig.toolbar.logo = None
+        rec_all = geo.rec.reshape(-1, 3)
+        fig.scatter(rec_all[:, 0], rec_all[:, 1], size=3, color="#9aa0a6",
+                    alpha=0.6, legend_label="receivers")
+        self._cds_src = ColumnDataSource(dict(x=geo.src[:, 0], y=geo.src[:, 1]))
+        r_src = fig.scatter("x", "y", source=self._cds_src, size=7,
+                            color="#d93025", legend_label="sources",
+                            nonselection_alpha=0.5, selection_color="#fbbc04")
+        self._cds_arec = ColumnDataSource(dict(x=[], y=[]))
+        self._cds_asrc = ColumnDataSource(dict(x=[], y=[]))
+        fig.scatter("x", "y", source=self._cds_arec, size=4, color="#1a73e8")
+        fig.scatter("x", "y", source=self._cds_asrc, size=14, color="#fbbc04",
+                    marker="star")
+        for t in fig.select(TapTool):
+            t.renderers = [r_src]
+        fig.legend.location = "top_right"
+        self._cds_src.selected.on_change("indices", self._on_tap)
+        self.figure = fig
 
-    def _highlight(i):
-        rec = geo.rec_for(i)
-        cds_arec.data = dict(x=rec[:, 0], y=rec[:, 1])
-        cds_asrc.data = dict(x=[geo.src[i, 0]], y=[geo.src[i, 1]])
+    def _on_tap(self, attr, old, new):
+        if new and self.on_pick is not None:
+            self.on_pick(new[0])
 
-    def _on_tap(attr, old, new):
-        if new:
-            browser.set_shot(new[0])
+    def set_active(self, i: int):
+        rec = self.geo.rec_for(i)
+        self._cds_arec.data = dict(x=rec[:, 0], y=rec[:, 1])
+        self._cds_asrc.data = dict(x=[self.geo.src[i, 0]], y=[self.geo.src[i, 1]])
 
-    cds_src.selected.on_change("indices", _on_tap)
-    browser._on_shot_change = _highlight
-    _highlight(0)
 
-    return pn.Row(pn.Column(fig, sizing_mode="stretch_width"),
-                  browser.panel(), sizing_mode="stretch_width")
+def _survey_kind(g: Gathers) -> str:
+    if "shot" in g.axes:
+        return ("3-D seismic (per-shot 3-D gathers)" if g.data.ndim == 4
+                else "2-D seismic line")
+    return "single gather" if g.data.ndim == 2 else "volume"
+
+
+def _info_md(g: Gathers) -> str:
+    n_bytes = int(np.prod(g.shape)) * np.dtype(g.data.dtype).itemsize
+    size = (f"{n_bytes / 1e9:.2f} GB" if n_bytes >= 1e9
+            else f"{n_bytes / 1e6:.1f} MB")
+    lines = [f"### {g.name or 'dataset'}",
+             f"**survey**&nbsp; {_survey_kind(g)}",
+             f"**shape**&nbsp; {tuple(g.shape)}",
+             f"**axes**&nbsp; ({', '.join(g.axes)})",
+             f"**dt**&nbsp; {g.dt * 1e3:g} ms &nbsp;·&nbsp; "
+             f"record {g.t0 + g.dt * (g.nt - 1):.3f} s",
+             f"**size**&nbsp; {size} {np.dtype(g.data.dtype).name}"]
+    if g.geometry is not None:
+        geo = g.geometry
+        kind = "shared spread" if geo.shared else "per-shot spread"
+        lines.append(f"**geometry**&nbsp; {geo.ns} sources · "
+                     f"{geo.nr} receivers ({kind})")
+    return "\n\n".join(lines)
+
+
+class Workspace:
+    """Sidebar (dataset info + display controls) + tabbed views.
+
+    Tabs adapt to the data: shot browsing (with linked layout map when
+    geometry is present) and/or whole-volume slicing.
+    """
+
+    def __init__(self, g: Gathers, cmap="seismic", perc=98.0, view=None):
+        _ensure_ext()
+        self.g = g
+        self.state = {"sample": g.sample(), "clim": None}
+        self.state["clim"] = robust_clim(self.state["sample"], perc)
+        self._panes, self._redraws, tabs = [], [], []
+        self.map = None
+
+        # -- shot-browsing tab -------------------------------------------
+        if "shot" in g.axes:
+            self.browser = ShotBrowser(g, self.state, cmap=cmap)
+            self._panes += self.browser.panes
+            self._redraws.append(self.browser.redraw)
+            main = self.browser.panel()
+            if g.geometry is not None:
+                self.map = LayoutMap(g.geometry)
+                self.map.on_pick = self.browser.set_shot
+                self.browser.on_shot_change = self.map.set_active
+                self.map.set_active(0)
+                self._map_col = pn.Column(self.map.figure, width=430)
+                main = pn.Row(self._map_col, main, sizing_mode="stretch_width")
+            label = "Shot gathers" + (" (3-D)" if g.data.ndim == 4 else "")
+            tabs.append((label, main))
+
+        # -- volume-slices tab (3-D data, with or without a shot axis) ----
+        if g.data.ndim == 3:
+            self.slices = SliceView(g.data, names=tuple(g.axes[:-1]), dt=g.dt,
+                                    t0=g.t0, cmap=cmap, clim=self.state["clim"])
+            self._panes += self.slices.panes
+            self._redraws.append(self._redraw_slices)
+            tabs.append(("Volume slices", self.slices.panel()))
+
+        # -- single 2-D gather ---------------------------------------------
+        if g.data.ndim == 2:
+            self._pane2d = ImagePane(xlabel=g.axes[0], cmap=cmap)
+            self._panes.append(self._pane2d)
+            self._redraws.append(self._draw2d)
+            self._draw2d()
+            tabs.append(("Gather", self._pane2d.figure))
+
+        self.tabs = pn.Tabs(*tabs, sizing_mode="stretch_width")
+        if view == "slices":
+            for i, (label, _) in enumerate(tabs):
+                if label == "Volume slices":
+                    self.tabs.active = i
+        self._controls = self._make_controls(cmap, perc)
+
+    def _draw2d(self):
+        self._pane2d.update(self.g.data, self.state["clim"],
+                            y0=self.g.t0, dy=self.g.dt)
+
+    def _redraw_slices(self):
+        self.slices.clim = self.state["clim"]
+        self.slices.redraw()
+
+    def _make_controls(self, cmap, perc):
+        w_cmap = pn.widgets.Select(name="colormap", options=list(_CMAPS),
+                                   value=cmap)
+        w_perc = pn.widgets.FloatSlider(name="clip percentile", start=80.0,
+                                        end=100.0, step=0.5, value=perc)
+        w_cmap.param.watch(
+            lambda e: [p.set_cmap(e.new) for p in self._panes], "value")
+
+        def _on_perc(event):
+            self.state["clim"] = robust_clim(self.state["sample"], event.new)
+            for r in self._redraws:
+                r()
+
+        w_perc.param.watch(_on_perc, "value")
+        widgets = [w_cmap, w_perc]
+        if self.map is not None:
+            w_map = pn.widgets.Checkbox(name="show layout map", value=True)
+            w_map.param.watch(
+                lambda e: setattr(self._map_col, "visible", e.new), "value")
+            widgets.append(w_map)
+        return widgets
+
+    def sidebar(self):
+        return [pn.pane.Markdown(_info_md(self.g)), *self._controls]
+
+    def panel(self):
+        """Plain layout (notebook-friendly)."""
+        return pn.Row(pn.Column(*self.sidebar(), width=280),
+                      self.tabs, sizing_mode="stretch_width")
+
+    def template(self, title="gathervis"):
+        """Served page with a proper header + sidebar."""
+        name = self.g.name
+        return pn.template.FastListTemplate(
+            title=f"{title} — {name}" if name else title,
+            sidebar=self.sidebar(), main=[self.tabs],
+            accent_base_color="#1a5276", header_background="#1a5276",
+            sidebar_width=300)
 
 
 # ---------------------------------------------------------------------------
-# dispatcher
+# serving helpers + dispatcher
 # ---------------------------------------------------------------------------
-def _build(obj, view, cmap, perc, title):
-    if isinstance(obj, Gathers):
-        g = obj
-    else:
-        raise TypeError("internal: _build expects Gathers")
+def _resolve_port(port, address) -> int:
+    """Return a usable port. If the requested one is busy (common on shared
+    servers), silently fall back to an OS-assigned free port. ``port=0``
+    always means 'pick a free one for me'."""
+    import socket
+    want = int(port)
+    s = socket.socket()
+    try:
+        s.bind((address, want))
+    except OSError:
+        s.close()
+        s = socket.socket()
+        s.bind((address, 0))
+        print(f"[gathervis] port {want} is busy -> using a free one instead")
+    p = s.getsockname()[1]
+    s.close()
+    return p
 
-    if g.geometry is not None and view != "slices":
-        return acquisition_app(g, cmap=cmap, perc=perc)
 
-    d = g.data
-    if d.ndim == 2:
-        return view_gather(d, dt=g.dt, t0=g.t0, cmap=cmap, perc=perc, title=title)
-    if d.ndim == 3:
-        browse = ("shot" in g.axes) if view is None else (view == "browse")
-        if browse:
-            return ShotBrowser(g, cmap=cmap, perc=perc).panel()
-        names = [a for a in g.axes[:-1]]
-        return SliceView(d, names=tuple(names), dt=g.dt, t0=g.t0,
-                         cmap=cmap, perc=perc).panel()
-    if d.ndim == 4:
-        return ShotBrowser(g, cmap=cmap, perc=perc).panel()
-    raise ValueError(f"cannot build a view for {d.ndim}-D data")
+def _banner(port):
+    """Print how to reach the viewer, adapted to where we are running:
+    local machine / VS Code Remote (auto-forwards) / bare SSH session."""
+    import os
+    url = f"http://localhost:{port}"
+    in_ssh = bool(os.environ.get("SSH_CONNECTION") or os.environ.get("SSH_TTY"))
+    in_vscode = (os.environ.get("TERM_PROGRAM") == "vscode"
+                 or any(k.startswith("VSCODE_") for k in os.environ))
+    if not in_ssh or in_vscode:
+        print(f"[gathervis] open  {url}")
+        if in_ssh:
+            print("[gathervis] VS Code detected: the port is auto-forwarded "
+                  "(see the PORTS panel); just open the URL above.")
+        return
+    # deliberately NOT auto-filling the real user@host: terminal output gets
+    # pasted into issues/screenshots, and the self-reported hostname is often
+    # not even resolvable from the user's machine anyway.
+    print(f"""[gathervis] open  {url}
+[gathervis] NOTE: you are in a plain SSH session. The browser on your OWN
+[gathervis] machine cannot reach this server until the port is forwarded:
+[gathervis]   1. on your LOCAL machine, open a new terminal (keep it open)
+[gathervis]   2. run:   ssh -L {port}:127.0.0.1:{port} <user>@<this-server>
+[gathervis]   3. open:  {url}
+[gathervis] one-time fix: add  LocalForward {port} 127.0.0.1:{port}  to this
+[gathervis] host's entry in your local ~/.ssh/config.
+[gathervis] (tip: VS Code Remote-SSH / Jupyter forward ports automatically)""")
 
 
 def show(obj, axes=None, view=None, dt=1.0, t0=0.0, src=None, rec=None,
-         shape=None, dtype="float32", cmap="seismic", perc=98.0,
-         port=None, address="127.0.0.1", title="gathervis"):
+         shape=None, dtype="float32", name=None, cmap="seismic", perc=98.0,
+         port=None, address="127.0.0.1", title="gathervis", verbose=True):
     """Open a viewer for ``obj``.
 
     Parameters
@@ -314,23 +467,42 @@ def show(obj, axes=None, view=None, dt=1.0, t0=0.0, src=None, rec=None,
         browsed shot by shot); 4-D (shot, recy, recx, time); a ``Gathers``
         dataset; or a path to a raw binary file (then ``shape`` is required).
     view : None | 'browse' | 'slices'
-        Overrides the default viewing mode of 3-D data.
+        Selects the initially active tab for 3-D data (both remain available).
+    name : str, optional
+        Free-text description shown in the info card, e.g.
+        "2-D acoustic modelling, 3-layer 2-D velocity model".
     port : int, optional
         If given, serve blocking on ``address:port`` (use SSH port forwarding
-        on a remote server). If None, return the Panel app (notebook-friendly).
+        on a remote server). If the port is busy a free one is picked
+        automatically; ``port=0`` always auto-picks. If None, return the
+        Panel app (notebook-friendly).
     """
+    import time
+    t_start = time.perf_counter()
     if view not in (None, "browse", "slices"):
         raise ValueError("view must be None, 'browse' or 'slices'")
     if isinstance(obj, (str, bytes)) or hasattr(obj, "__fspath__"):
         if shape is None:
             raise ValueError("shape= is required when opening a raw binary file")
         obj = from_file(obj, shape, dtype=dtype, axes=axes, dt=dt, t0=t0,
-                        src=src, rec=rec)
+                        src=src, rec=rec, name=name)
     elif not isinstance(obj, Gathers):
-        obj = from_array(obj, src=src, rec=rec, axes=axes, dt=dt, t0=t0)
+        obj = from_array(obj, src=src, rec=rec, axes=axes, dt=dt, t0=t0,
+                         name=name)
+    elif name is not None:
+        obj.name = name
+    t_data = time.perf_counter()
 
-    app = _build(obj, view, cmap, perc, title)
+    ws = Workspace(obj, cmap=cmap, perc=perc, view=view)
+    t_app = time.perf_counter()
+    if verbose:
+        print(f"[gathervis] dataset {tuple(obj.shape)} ready in "
+              f"{t_data - t_start:.2f}s | app built in {t_app - t_data:.2f}s")
+
     if port is None:
-        return app
-    pn.serve(app, port=int(port), address=address, show=False, title=title,
-             websocket_origin="*")
+        return ws.panel()
+    port = _resolve_port(port, address)
+    if verbose:
+        _banner(port)
+    pn.serve(ws.template(title), port=port, address=address, show=False,
+             title=title, websocket_origin="*")

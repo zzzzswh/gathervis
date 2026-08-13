@@ -29,13 +29,30 @@ ds = gv.from_array(data, src=src_xyz, rec=rec_xyz, dt=0.002)
 gv.show(ds, port=8080)   # layout map; tap a source point -> its shot gather
 ```
 
-On a remote server, forward the port and open the browser locally:
+## Remote usage (pick one)
+
+1. **VS Code Remote-SSH (recommended).** Run any example in the integrated
+   terminal; VS Code auto-forwards the port and the printed
+   `http://localhost:8080` becomes clickable. Zero setup.
+2. **Jupyter.** Omit `port=` and the returned app renders inline in the
+   notebook -- no extra port at all.
+3. **Bare terminal (fallback).** Forward the port yourself, then open the URL
+   locally:
+
+   ```bash
+   ssh -L 8080:localhost:8080 user@gpu-server
+   ```
+
+   One-time setup: add `LocalForward 8080 127.0.0.1:8080` to the host entry in
+   your local `~/.ssh/config`. If the port is busy gathervis auto-picks a free
+   one and prints it.
+
+**Fast viewing of saved data** (no torch import) via the CLI:
 
 ```bash
-ssh -L 8080:localhost:8080 user@gpu-server
+gathervis line2d_data.npy --geom line2d_geom.npz
+gathervis shots.bin --shape 60 192 1200 --dt 0.002
 ```
-
-In a notebook, omit `port=` and the returned Panel app renders inline.
 
 Try it without any data: `python examples/quickstart.py` (analytic synthetic), or
 `python examples/deepwave_line2d.py` for real wave-equation modelling with deepwave.

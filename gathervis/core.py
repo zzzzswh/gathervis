@@ -82,7 +82,7 @@ class Gathers:
     touches the bytes of that shot.
     """
 
-    def __init__(self, data, axes=None, dt=1.0, t0=0.0, geometry=None):
+    def __init__(self, data, axes=None, dt=1.0, t0=0.0, geometry=None, name=None):
         if data.ndim not in DEFAULT_AXES and data.ndim != 2:
             raise ValueError(f"expected 2-D/3-D/4-D data, got {data.ndim}-D")
         axes = tuple(axes) if axes is not None else DEFAULT_AXES[data.ndim]
@@ -101,6 +101,7 @@ class Gathers:
         self.dt = float(dt)
         self.t0 = float(t0)
         self.geometry = geometry
+        self.name = name
 
         if geometry is not None:
             if "shot" not in axes:
@@ -159,18 +160,19 @@ class Gathers:
                 f"dt={self.dt}{geo})")
 
 
-def from_array(data, src=None, rec=None, axes=None, dt=1.0, t0=0.0) -> Gathers:
+def from_array(data, src=None, rec=None, axes=None, dt=1.0, t0=0.0,
+               name=None) -> Gathers:
     """Wrap an in-memory / memmapped array (optionally with geometry)."""
     geometry = None
     if src is not None or rec is not None:
         if src is None or rec is None:
             raise ValueError("both src and rec are required for geometry")
         geometry = Geometry(src, rec)
-    return Gathers(data, axes=axes, dt=dt, t0=t0, geometry=geometry)
+    return Gathers(data, axes=axes, dt=dt, t0=t0, geometry=geometry, name=name)
 
 
 def from_file(path, shape, dtype="float32", axes=None, dt=1.0, t0=0.0,
-              src=None, rec=None, offset=0) -> Gathers:
+              src=None, rec=None, offset=0, name=None) -> Gathers:
     """Lazily open a raw binary file as a read-only memmap."""
     data = np.memmap(path, dtype=dtype, mode="r", shape=tuple(shape), offset=offset)
-    return from_array(data, src=src, rec=rec, axes=axes, dt=dt, t0=t0)
+    return from_array(data, src=src, rec=rec, axes=axes, dt=dt, t0=t0, name=name)
