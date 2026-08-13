@@ -4,10 +4,11 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "gathervis"
-version = "0.14.3"
-description = "Web-based pre-stack seismic gather viewer: lazy on 100 GB memmaps, cigvis-style 3-D slicing, geometry-linked shot browsing, filters and windowed spectra. SSH-friendly."
+version = "0.14.4"
+description = "Web-based seismic shot-gather viewer for remote GPU servers: lazy loading of huge files, SEG-Y import, cigvis-style 3-D volume slicing, geometry-linked browsing, filters/AGC, windowed spectra and f-k, first-break picking."
 readme = "README.md"
 license = { text = "MIT" }
+keywords = ["seismic", "geophysics", "shot-gather", "segy", "visualization", "viewer", "fwi", "pre-stack", "seismology"]
 requires-python = ">=3.9"
 dependencies = [
     "numpy>=1.22",
