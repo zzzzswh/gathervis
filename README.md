@@ -1,33 +1,172 @@
+<div align="center">
+
 # gathervis
 
-**Interactive pre-stack seismic gather viewer for the Python / GPU-server era.**
+**English** | [简体中文](README.zh-CN.md)
 
-叠前地震数据交互式查看器：像 cigvis 之于叠后数据一样，让你在 GPU 服务器上用几行代码 + 一个浏览器查看正演/实测的炮集数据。SSH 端口转发即可交互，无需 X11、无需把数据拖回本地。
+**A web-based seismic gather viewer for Python / GPU servers.**
+
+*Point it at a 100 GB file on a remote server. It opens in your browser in one second.*
+
+![python](https://img.shields.io/badge/python-3.9%2B-blue)
+![license](https://img.shields.io/badge/license-MIT-green)
+![tests](https://img.shields.io/badge/tests-58%20passing-brightgreen)
+
+<img src="docs/images/ui_gather.png" width="820" alt="Shot gathers tab: analysis window, its spectrum with the crosshair on, and the four tool blocks"/>
+<img src="docs/images/ui_slice.png" width="820" alt="Volume slices tab: AGC-gained volume as a cuboid stretched 8x along the shot axis"/>
+
+*2-D gather QC and 3-D volume slicing, in one browser tab.*
+
+</div>
+
+> **💬 Feature requests welcome!** If there is anything you wish it did — a
+> display mode, a processing step, a file format — **please open an issue and
+> tell me. I will implement it.** Thank you very much!
+>
+> **💬 欢迎提需求！** 如果你希望它能做什么 —— 显示方式、处理步骤、文件格式 ——
+> **请务必开 issue 告诉我，我会实现的，非常感谢！**
+
+---
+
+## Why gathervis?
+
+* **Instant on huge data.** Files open as lazy memmaps — browsing a shot reads
+  only that shot's bytes; slicing a volume reads only that slice. A 100 GB raw
+  binary opens as fast as a 1 MB one.
+* **Just a browser.** Serves over one port. VS Code Remote-SSH auto-forwards
+  it; Jupyter renders it inline; a bare `ssh -L` also works.
+* **Geometry-aware.** Give it source/receiver coordinates and you get an
+  acquisition-layout tab — tap any source point to jump to its shot gather.
+* **cigvis-style 3-D.** Volumes render as a rotatable cuboid with three live
+  slice planes (WebGL).
+* **QC tools built in.** Wiggle & variable-density display, industry
+  colormaps, zero-phase Ormsby filters, and draw-a-window spectral analysis.
+* **Simple.** ~1000 lines of package code, two rendering primitives, one
+  wire format (decimate → uint8).
 
 ## Install
 
 ```bash
-pip install -e .            # numpy + panel + bokeh
-pip install deepwave        # optional, for the modelling example (pulls torch)
+pip install -e .            # numpy + panel + bokeh + plotly
+pip install deepwave        # optional, for the modelling examples (pulls torch)
 ```
 
-## Quickstart
+## Quick start
 
 ```python
 import gathervis as gv
 
-# -- mode A: quick look, no geometry --
+# -- quick look, no geometry --
 gv.show(gather_2d, dt=0.002, port=8080)          # a (trace, time) panel
 gv.show(line_3d, dt=0.002, port=8080)            # default (shot, rec, time): browse shots
-gv.show(line_3d, view='slices', port=8080)       # same array as a sliceable volume
-gv.show(vol, axes=('recy','recx','time'))        # a 3-D shot gather -> slice view
+gv.show(line_3d, view='slices', port=8080)       # same array as a 3-D cuboid w/ slices
 gv.show('shots.bin', shape=(60,192,1200),        # raw binary: lazy memmap, opens instantly
         dtype='float32', dt=0.002, port=8080)
+gv.show(vel, axes=('x','y','depth'), dt=10.0)    # property volume (velocity QC)
 
-# -- mode B: with acquisition geometry --
+# -- with acquisition geometry --
 ds = gv.from_array(data, src=src_xyz, rec=rec_xyz, dt=0.002)
-gv.show(ds, port=8080)   # layout map; tap a source point -> its shot gather
+gv.show(ds, port=8080)   # + Geometry tab; tap a source -> its shot gather
 ```
+
+Or from the shell, no code at all:
+
+```bash
+gathervis line2d_data.npy --geom line2d_geom.npz
+gathervis shots.bin --shape 60 192 1200 --dt 0.002
+gathervis field.sgy                                # SEG-Y: dt + geometry from headers
+gathervis vel.npy --axes x y depth --dt 10 --cmap rainbow
+```
+
+Examples with synthetic data: `python examples/quickstart.py` serves an
+analytic synthetic;
+`python examples/deepwave_line2d.py` models a 2-D line with
+[deepwave](https://github.com/ar4/deepwave); and
+`python examples/deepwave_lines3d.py` shoots **five 2-D lines over a rich 3-D
+velocity model** (dipping layers + anticline dome + low-velocity channel lens)
+with deepwave's 3-D engine, then opens the result.
+
+## Feature tour
+
+### Browse shots, linked to the acquisition geometry
+
+The **Shot gathers** tab (first screenshot above) flips through shots live
+while you drag, or jumps straight to a number typed into *go to shot*. Draw
+analysis windows right on the gather, compute their spectra (crosshair +
+a live frequency/dB readout for comparing peaks), pick events manually or
+with the STA/LTA auto-picker — the tool blocks under the panel
+(*Window · Spectrum · Event picking · FB picking*) each keep their own
+controls.
+
+The **Geometry** tab shows the acquisition layout; tapping a source selects
+that shot and jumps back to its gather, with the active spread highlighted:
+
+<img src="docs/images/ui_geometry.png" width="820" alt="Geometry tab: five 2-D lines, active shot starred with its spread highlighted"/>
+
+### Gestures & controls
+
+| To do this | Do this |
+| --- | --- |
+| Draw a box window | select the box toolbar tool → **SHIFT+drag** (or click, move, click) |
+| Draw a polygon window | select the polygon tool → click each vertex, **double-click or ESC** to finish |
+| Move / delete a window | drag it; tap to select, then **BACKSPACE** (or *clear windows*) |
+| Add / move / delete picks | point toolbar tool → tap adds, drag moves, tap + **BACKSPACE** deletes (or *clear shot* / *clear all*) |
+| Auto first breaks | set STA / LTA / threshold → *auto pick*; refine with *snap* (peak / trough / \|max\|) or by dragging |
+| Compare spectrum peaks | crosshair toolbar icon + the freq / dB readout under the panel |
+| Scale one axis | the x-only / y-only wheel-zoom toolbar tools |
+| Reshape the 3-D cuboid | one *stretch* slider per axis (1.0 centered, 0.125×–8×) |
+| Jump to a shot | drag the slider, type in *go to shot*, or tap a source on the Geometry tab |
+| Resize the spectrum panel | *size* (S / M / L) in the Spectrum block |
+
+The same cheat-sheet lives in-app behind the *? gestures* button.
+
+### Slice volumes as a 3-D cuboid (cigvis-style)
+
+Any 3-D array — a whole line, one 3-D shot gather, a velocity model — renders
+as a wireframe cuboid with three axis-aligned slice planes. Drag the sliders
+to move planes (each step ships only that one decimated slice), rotate/zoom
+freely (your camera survives every update), and reshape the cuboid with
+per-axis stretch sliders (0.125×–8×, geometric steps, 1.0 centered) — the
+second screenshot at the top shows a line stretched 8× along the shot axis
+with AGC applied through the same filter/gain chain as the gather views.
+
+<img src="docs/images/velocity_qc.png" width="440" alt="velocity model QC with depth axis"/>
+
+The screenshot at the top shows a modelled line as a `(shot, rec, time)`
+cube; above is the 3-D velocity model behind such data, viewed with
+`axes=('x','y','depth')` — depth labels and min/max color limits come
+automatically for property volumes.
+
+### Wiggle or variable density, with the colormaps you actually use
+
+One click switches every 2-D panel between variable density and
+variable-area wiggle, and a *flip polarity* checkbox negates the display
+(wiggle fill lobes and density colors swap together — SEG normal ↔ reverse).
+Colormaps: `seismic`, `gray`, `petrel` (anchors from cigvis), `rainbow`,
+each with a `_r` reversed variant. The clip-percentile slider sets the color
+limits — and doubles as wiggle gain.
+
+<img src="docs/images/display_modes.png" width="620" alt="variable density vs wiggle"/>
+
+### Zero-phase trapezoid filters
+
+Classic ramped (Ormsby-style) **low-pass / high-pass / band-pass** on the
+gather views: linear ramps over `f1–f2` (low cut) and `f3–f4` (high cut),
+exactly zero-phase, applied per displayed gather so memmap laziness is
+preserved. Edit a corner frequency and the panel re-filters instantly.
+
+<img src="docs/images/filters.png" width="620" alt="band-pass filtering a noisy gather"/>
+
+### Draw windows → spectra → export
+
+Draw **rectangles** (SHIFT+drag, or click-move-click) or **polygons** (click
+vertices, ESC to finish) directly on a gather, then hit *compute spectrum*:
+one peak-normalized dB amplitude spectrum per window, color-matched to its
+window, recomputed automatically when you change shot or filter. *Export
+windows* downloads the definitions as JSON (trace/time coordinates + dt) for
+reuse elsewhere. Signal window vs. noise window comparisons take ten seconds.
+
+<img src="docs/images/windows_spectra.png" width="720" alt="analysis windows and their spectra"/>
 
 ## Remote usage (pick one)
 
@@ -35,51 +174,54 @@ gv.show(ds, port=8080)   # layout map; tap a source point -> its shot gather
    terminal; VS Code auto-forwards the port and the printed
    `http://localhost:8080` becomes clickable. Zero setup.
 2. **Jupyter.** Omit `port=` and the returned app renders inline in the
-   notebook -- no extra port at all.
-3. **Bare terminal (fallback).** Forward the port yourself, then open the URL
-   locally:
-
-   ```bash
-   ssh -L 8080:localhost:8080 user@gpu-server
-   ```
-
-   One-time setup: add `LocalForward 8080 127.0.0.1:8080` to the host entry in
-   your local `~/.ssh/config`. If the port is busy gathervis auto-picks a free
-   one and prints it.
-
-**Fast viewing of saved data** (no torch import) via the CLI:
-
-```bash
-gathervis line2d_data.npy --geom line2d_geom.npz
-gathervis shots.bin --shape 60 192 1200 --dt 0.002
-```
-
-Try it without any data: `python examples/quickstart.py` (analytic synthetic), or
-`python examples/deepwave_line2d.py` for real wave-equation modelling with deepwave.
+   notebook — no extra port at all.
+3. **Bare terminal.** `ssh -L 8080:localhost:8080 user@gpu-server`, then open
+   the URL locally. If the port is busy gathervis auto-picks a free one and
+   prints it.
 
 ## Semantics (the one rule to remember)
 
-The last axis is always **time**. A bare 3-D array defaults to `(shot, rec, time)`
-and is browsed shot by shot; pass `view='slices'` to slice it as a volume instead,
-or declare other semantics explicitly with `axes=`. `axes` says what the array
+The last axis is always the vertical one: **time** for data, **depth** for
+property volumes. A bare 3-D array defaults to `(shot, rec, time)` and is
+browsed shot by shot; pass `view='slices'` to slice it as a volume instead, or
+declare other semantics explicitly with `axes=`. `axes` says what the array
 *is*, `view` says how to *look* at it — the two are independent.
 
 ## Design notes
 
 * **Lazy everywhere.** memmap-backed data; browsing a shot reads only that
-  shot's bytes; slicing reads only that slice.
+  shot's bytes; slicing reads only that slice; filtering and spectra apply to
+  the displayed gather only.
 * **Cheap wire format.** Panels are stride-decimated to a pixel budget and
   quantized to uint8 server-side before shipping to the browser.
-* **One rendering primitive.** Every view is the same `ImagePane`; ~700 lines
-  of package code total. Keep it simple, stupid.
+* **Two rendering primitives.** 2-D panels are bokeh images/wiggles; volumes
+  are plotly WebGL slice planes. Both are fed by the same decimate → uint8
+  pipeline.
+* **Live scrubbing.** Sliders update while dragging; the 3-D camera, stretch
+  factors, and drawn windows all survive every update. Every 2-D panel has
+  x-only / y-only wheel-zoom for per-axis scaling, and a live cursor readout
+  under the panel (trace, time, and the amplitude of the pixel under the
+  mouse) that runs entirely client-side. The spectrum panel gets the same
+  readout (frequency / dB) plus a toolbar-toggleable crosshair for comparing
+  peak heights; gather panels have the crosshair too.
 
 ## Roadmap
 
-M1 (this release): dual-mode shot-gather viewing, acquisition map with linked
-browsing, web-first serving. M2: AGC / trace balance / gain / wiggle display /
-synced panels (CuPy-accelerated when data lives on the GPU server). M3: header
-indexing, CMP binning, gather extraction by any key, SEG-Y import. M4: common-
-offset/time slicing, event picking, NMO preview. Full plan: `docs/plan.md`.
+**M2** (remaining): synced comparison panels · client-side volume cache for
+cigvis-grade slice scrubbing (AGC / trace balance / CuPy: done). **M3** (remaining): header indexing, gather extraction by any key
+(SEG-Y import: done). **M4** (remaining):
+common-offset/time slicing, NMO preview (event picking: done). Full plan:
+[`docs/plan.md`](docs/plan.md). *And whatever you ask for — see the note at
+the top.*
+
+## Acknowledgements
+
+The 3-D slice view follows the interaction style of
+[cigvis](https://github.com/JintaoLee-Roger/cigvis) (whose `petrel` colormap
+anchors we borrow, MIT). Modelling examples use
+[deepwave](https://github.com/ar4/deepwave). Built on
+[Panel](https://panel.holoviz.org/), [Bokeh](https://bokeh.org/) and
+[Plotly](https://plotly.com/javascript/).
 
 ## License
 

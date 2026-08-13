@@ -2,7 +2,8 @@
 
 Design rules (keep it simple):
   * ``data`` is any numpy-like array (ndarray / memmap / zarr array). Never copied.
-  * The last axis is always time.
+  * The last axis is always the vertical one: time (data) or depth
+    (property volumes such as velocity models).
   * When a ``shot`` axis exists it is always axis 0.
   * Default semantics: 2D -> (trace, time), 3D -> (shot, rec, time),
     4D -> (shot, recy, recx, time).
@@ -18,7 +19,9 @@ DEFAULT_AXES = {
     3: ("shot", "rec", "time"),
     4: ("shot", "recy", "recx", "time"),
 }
-KNOWN_AXES = {"shot", "rec", "recx", "recy", "trace", "time", "cmp", "offset"}
+KNOWN_AXES = {"shot", "rec", "recx", "recy", "trace", "time", "cmp", "offset",
+              "x", "y", "depth"}   # x/y/depth: property volumes (e.g. velocity)
+VERTICAL_AXES = ("time", "depth")
 
 
 def _xyz(a, name):
@@ -91,8 +94,9 @@ class Gathers:
         unknown = set(axes) - KNOWN_AXES
         if unknown:
             raise ValueError(f"unknown axis names {unknown}; known: {sorted(KNOWN_AXES)}")
-        if axes[-1] != "time":
-            raise ValueError(f"last axis must be 'time', got {axes}")
+        if axes[-1] not in VERTICAL_AXES:
+            raise ValueError(
+                f"last axis must be one of {VERTICAL_AXES}, got {axes}")
         if "shot" in axes and axes[0] != "shot":
             raise ValueError("'shot' axis must be axis 0")
 
@@ -176,3 +180,63 @@ def from_file(path, shape, dtype="float32", axes=None, dt=1.0, t0=0.0,
     """Lazily open a raw binary file as a read-only memmap."""
     data = np.memmap(path, dtype=dtype, mode="r", shape=tuple(shape), offset=offset)
     return from_array(data, src=src, rec=rec, axes=axes, dt=dt, t0=t0, name=name)
+
+
+def from_segy(path, max_gb: float = 8.0, name=None) -> Gathers:
+    """Open a SEG-Y file: shots grouped by FFID, geometry from trace headers.
+
+    Reads dt from the binary header, source/receiver x-y from the standard
+    trace-header words (SourceX/Y, GroupX/Y, honoring the coordinate scalar),
+    and groups traces into shots by field record number (FFID). Ragged shots
+    (unequal trace counts) are zero-padded to the largest and a warning is
+    printed. Data is loaded into memory; files estimated above ``max_gb``
+    are refused with advice (lazy SEG-Y is on the roadmap -- convert to .npy
+    for now). Requires the optional ``segyio`` package.
+    """
+    import warnings
+    try:
+        import segyio
+    except ImportError as e:
+        raise ImportError("from_segy requires segyio: pip install segyio") from e
+
+    with segyio.open(str(path), "r", ignore_geometry=True) as f:
+        ntr, nt = f.tracecount, len(f.samples)
+        est_gb = ntr * nt * 4 / 1e9
+        if est_gb > max_gb:
+            raise MemoryError(
+                f"{path}: ~{est_gb:.1f} GB > max_gb={max_gb}. Lazy SEG-Y is "
+                "on the roadmap; for now convert to .npy and use from_file.")
+        dt = segyio.tools.dt(f) / 1e6                    # us -> s
+        H = segyio.TraceField
+        ffid = f.attributes(H.FieldRecord)[:]
+        sx = f.attributes(H.SourceX)[:].astype(float)
+        sy = f.attributes(H.SourceY)[:].astype(float)
+        gx = f.attributes(H.GroupX)[:].astype(float)
+        gy = f.attributes(H.GroupY)[:].astype(float)
+        sc = f.attributes(H.SourceGroupScalar)[:].astype(float)
+        sc[sc == 0] = 1.0
+        scale = np.where(sc > 0, sc, 1.0 / np.abs(sc))   # SEG-Y scalar rule
+        sx *= scale; sy *= scale; gx *= scale; gy *= scale
+
+        shots, order = np.unique(ffid, return_index=True)
+        shots = shots[np.argsort(order)]                 # keep file order
+        ns = len(shots)
+        groups = [np.flatnonzero(ffid == s) for s in shots]
+        nr = max(len(g) for g in groups)
+        if min(len(g) for g in groups) != nr:
+            warnings.warn(f"{path}: ragged shots "
+                          f"({min(len(g) for g in groups)}..{nr} traces); "
+                          "zero-padding to the largest")
+        data = np.zeros((ns, nr, nt), dtype=np.float32)
+        src = np.zeros((ns, 2))
+        rec = np.zeros((ns, nr, 2))
+        for i, g in enumerate(groups):
+            for j, tr in enumerate(g):
+                data[i, j] = f.trace[tr]
+            src[i] = sx[g[0]], sy[g[0]]
+            rec[i, :len(g), 0] = gx[g]
+            rec[i, :len(g), 1] = gy[g]
+            if len(g) < nr:                              # pad geometry too
+                rec[i, len(g):] = rec[i, len(g) - 1]
+    return from_array(data, src=src, rec=rec, dt=dt,
+                      name=name or str(path))

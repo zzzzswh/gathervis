@@ -9,10 +9,10 @@ Quickstart::
     ds = gv.from_array(data, src=src_xyz, rec=rec_xyz, dt=0.002)
     gv.show(ds, port=8080)                   # acquisition map + linked shot gathers
 """
-from .core import Gathers, Geometry, from_array, from_file
+from .core import Gathers, Geometry, from_array, from_file, from_segy
 
-__version__ = "0.2.0"
-__all__ = ["Gathers", "Geometry", "from_array", "from_file", "show"]
+__version__ = "0.14.3"
+__all__ = ["Gathers", "Geometry", "from_array", "from_file", "from_segy", "show"]
 
 
 def __getattr__(name):

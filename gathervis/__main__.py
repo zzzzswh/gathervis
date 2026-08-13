@@ -45,6 +45,9 @@ def _load(args) -> Gathers:
     dt = 1.0 if dt is None else dt
     axes = tuple(args.axes) if args.axes else None
 
+    if args.data.lower().endswith((".sgy", ".segy")):
+        from .core import from_segy
+        return from_segy(args.data)            # dt + geometry from headers
     if args.data.endswith(".npy"):
         data = np.load(args.data, mmap_mode="r")   # lazy
         return from_array(data, src=src, rec=rec, axes=axes, dt=dt,

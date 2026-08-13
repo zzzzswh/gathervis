@@ -20,9 +20,9 @@ if mode == "single":                      # one 2-D gather, plain and fast
     gv.show(line.shot(10), dt=line.dt, port=port)
 elif mode == "browse":                    # (shot, rec, time): default browsing
     gv.show(line.data, dt=line.dt, port=port)
-elif mode == "slices":                    # same array viewed as a volume
+elif mode == "slices":                    # same array as a 3-D cuboid w/ slices
     gv.show(line.data, dt=line.dt, view="slices", port=port)
-elif mode == "4d":                        # 3-D shot gathers: per-shot slice view
+elif mode == "4d":                        # 3-D shot gathers: per-shot cuboid
     d = np.asarray(line.data).reshape(48, 6, 20, 1001)  # fake (shot,recy,recx,t)
     gv.show(d, dt=line.dt, port=port)
 else:                                     # geometry: map + linked shot gathers
