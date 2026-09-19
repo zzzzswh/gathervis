@@ -28,6 +28,9 @@ from bokeh.plotting import figure
 from .core import Gathers, from_array, from_file
 from .process import (robust_clim, decimate, quantize, bandpass,
                       agc, trace_balance, pick_first_breaks)
+from . import render as _render
+from .render import (CMAPS as _CMAPS, palette_hex as _palette, png_bytes,
+                     raster_size, render_gather)
 
 __all__ = ["show"]
 
@@ -47,6 +50,63 @@ _PLOT_CSS = """
 .gv-plot:fullscreen .bk-Figure { height: 100% !important; }
 """
 
+# Panel's stock card.css gives every card a heavy drop shadow, an outline, a
+# 1.4em bold title and a shadow that pops in on header hover. Four cards of
+# that in a sidebar read as four floating dialogs. These stylesheets (applied
+# per component, since Panel renders them into shadow roots where global CSS
+# cannot reach) flatten them into one quiet, consistent block.
+_INK, _MUTED, _LINE = "#3c4043", "#5f6368", "#dadce0"
+
+_CARD_CSS = f"""
+:host(.card) {{
+  box-shadow: none;
+  outline: none;
+  border: 1px solid {_LINE};
+  border-radius: 8px;
+  overflow: hidden;
+}}
+.card-header {{
+  background-color: #f6f7f9;
+  border-radius: 0;
+  padding: 1px 10px;
+  min-height: 34px;
+}}
+.card-header:hover {{ box-shadow: none; background-color: #eceef1; }}
+.card-header:not(:hover) {{ box-shadow: none; }}
+.card-title {{ font-size: 1em; font-weight: 600; color: {_INK}; }}
+"""
+
+# The native file picker is the one control we cannot rebuild; at least give
+# it the same type size, border and radius as the buttons above it.
+_FILE_CSS = f"""
+input[type="file"] {{
+  font: inherit;
+  font-size: 12px;
+  width: 100%;
+  color: {_MUTED};
+}}
+input[type="file"]::file-selector-button {{
+  font: inherit;
+  font-size: 12px;
+  padding: 5px 12px;
+  margin-right: 8px;
+  border: 1px solid {_LINE};
+  border-radius: 6px;
+  background: #ffffff;
+  color: {_INK};
+  cursor: pointer;
+}}
+input[type="file"]::file-selector-button:hover {{ background: #f1f3f4; }}
+"""
+
+# One shape for every control inside a tool card: full width, same rhythm.
+# Widths used to be hand-picked per widget (205 here, 97 there), which is
+# what made the cards look assembled from spare parts.
+# width=None is explicit: several Panel widgets ship a 300 px default that
+# would otherwise sit in the param even though stretch_width wins in layout.
+_W = dict(sizing_mode="stretch_width", width=None, margin=(4, 0))
+_WFILE = dict(_W, stylesheets=[_FILE_CSS])
+
 
 def _ensure_ext():
     global _ext_done
@@ -64,40 +124,10 @@ def _set_throttled(widget, value):
         widget.value_throttled = value
 
 
-# ---------------------------------------------------------------------------
-# palettes (anchor-interpolated; no matplotlib dependency)
-# ---------------------------------------------------------------------------
-# variable-density colormaps: (positions, rgb anchors). 'petrel' anchors are
-# taken from cigvis's customcmap (MIT), the rest are ours.
-_PALETTES = {
-    "seismic": ([0.0, 0.25, 0.5, 0.75, 1.0],          # blue - white - red
-                [[0.0, 0.0, 0.45], [0.1, 0.3, 1.0], [1.0, 1.0, 1.0],
-                 [1.0, 0.25, 0.1], [0.45, 0.0, 0.0]]),
-    "gray": ([0.0, 1.0], [[0.0, 0.0, 0.0], [1.0, 1.0, 1.0]]),
-    "petrel": ([0.0, 0.33, 0.4, 0.5, 0.6, 0.67, 1.0],  # cyan-blue-gray-red-yellow
-               [[0.631, 1.0, 1.0], [0.0, 0.0, 0.749],
-                [0.302, 0.302, 0.302], [0.8, 0.8, 0.8],
-                [0.380, 0.271, 0.0], [0.749, 0.0, 0.0], [1.0, 1.0, 0.0]]),
-    "rainbow": ([0.0, 0.125, 0.375, 0.625, 0.875, 1.0],  # jet-style
-                [[0.0, 0.0, 0.5], [0.0, 0.0, 1.0], [0.0, 1.0, 1.0],
-                 [1.0, 1.0, 0.0], [1.0, 0.0, 0.0], [0.5, 0.0, 0.0]]),
-}
-_CMAPS = tuple(_PALETTES) + tuple(f"{n}_r" for n in _PALETTES)
+# Palettes live in render.py, which needs the same colors as a uint8 lookup
+# table for offscreen rasterizing; _palette / _CMAPS above are its hex-string
+# face, kept under the old names so the rest of this module reads unchanged.
 _DISPLAYS = ("density", "wiggle")   # variable density image vs. wiggle traces
-
-
-def _palette(name: str):
-    base = name[:-2] if name.endswith("_r") else name
-    if base not in _PALETTES:
-        raise ValueError(f"unknown cmap {name!r}; available: {_CMAPS}")
-    pos, anchors = _PALETTES[base]
-    pos, anchors = np.asarray(pos), np.asarray(anchors)
-    t = np.linspace(0.0, 1.0, 256)
-    rgb = np.stack([np.interp(t, pos, anchors[:, c]) for c in range(3)], axis=1)
-    if name.endswith("_r"):
-        rgb = rgb[::-1]
-    return ["#%02x%02x%02x" % tuple(c) for c in (rgb * 255 + 0.5).astype(int)]
-
 
 
 # client-side cursor readout: trace / time / amplitude under the mouse.
@@ -171,9 +201,9 @@ the crosshair icon toggles cursor lines
 def _gesture_help():
     """A small '?' button toggling an inline gesture cheat-sheet."""
     body = pn.pane.HTML(_GESTURES_HTML, visible=False,
-                        sizing_mode="stretch_width", margin=(0, 10))
+                        sizing_mode="stretch_width", margin=(4, 0))
     btn = pn.widgets.Button(
-        name="? gestures", width=110, button_type="light", margin=(18, 6),
+        name="? gestures", **_W,
         description="how to draw, move and delete with the toolbar tools "
                     "(SHIFT, BACKSPACE, ESC)")
     btn.on_click(lambda e: setattr(body, "visible", not body.visible))
@@ -188,29 +218,60 @@ def _card_style(sidebar):
     collapsed so the sidebar stays scannable -- the display controls above
     them are the ones reached on every shot.
     """
+    common = dict(stylesheets=[_CARD_CSS], header_color=_INK)
     if sidebar:
-        return dict(sizing_mode="stretch_width", margin=(3, 0),
+        return dict(common, sizing_mode="stretch_width", margin=(4, 0),
                     collapsed=True)
-    return dict(width=240, margin=(6, 6), collapsed=False)
+    return dict(common, width=248, margin=(6, 6), collapsed=False)
+
+
+def _slug(name, default="gather", maxlen=40):
+    """A dataset name reduced to a safe file-name stem (for downloads)."""
+    import os
+    import re
+    stem = os.path.basename(str(name or "")).rsplit(".", 1)[0]
+    stem = re.sub(r"[^A-Za-z0-9._-]+", "_", stem).strip("._-")
+    return stem[:maxlen] or default
+
+
+def _hint(html):
+    """The one small-print style: same size, color and inset everywhere."""
+    return pn.pane.HTML(
+        f"<div style='font-size:11px;color:{_MUTED};line-height:1.45'>"
+        f"{html}</div>", margin=(4, 0, 0, 0), sizing_mode="stretch_width")
 
 
 def _labeled(widget, caption):
-    """A widget with a small gray caption above it (labels bare FileInputs)."""
-    cap = pn.pane.HTML(f"<div style='font-size:11px;color:#5f6368;"
-                       f"margin:2px 0 0 8px'>{caption}</div>", margin=0)
-    return pn.Column(cap, widget, margin=(0, 5))
+    """A widget with a small caption above it (labels bare FileInputs)."""
+    return pn.Column(_hint(caption), widget, margin=0,
+                     sizing_mode="stretch_width")
 
 
-def _coord_readout(fig, xn, xu, yn, yu, xdigits=1, ydigits=1):
-    """Client-side cursor readout (coordinates only) under any figure."""
+def _coord_readout(fig, xn, xu, yn, yu, xdigits=1, ydigits=1, yaxis=None):
+    """Client-side cursor readout (coordinates only) under any figure.
+
+    ``yaxis``: take the y unit from that axis' label at runtime rather than
+    baking ``yu`` in, for a plot whose y scale is switchable -- the spectrum
+    is either dB or a linear amplitude ratio. The parenthesised part of the
+    label is the unit; no parentheses means a bare ratio, which needs more
+    decimals than a dB value to be readable.
+    """
     div = Div(text="&nbsp;", height=18,
               styles={"color": "#5f6368", "font-size": "12px",
                       "font-family": "monospace"})
+    if yaxis is None:
+        ytxt = f'cb_obj.y.toFixed({ydigits}) + " {yu}"'
+        args = dict(div=div)
+    else:
+        ytxt = ('(function () {\n'
+                '  const m = ax.axis_label.match(/\\(([^)]+)\\)/);\n'
+                f'  return cb_obj.y.toFixed(m ? {ydigits} : 3)'
+                ' + (m ? " " + m[1] : "");\n})()')
+        args = dict(div=div, ax=yaxis)
     code = (f'if (cb_obj.x == null) {{ div.text = "&nbsp;"; return; }}\n'
             f'div.text = "{xn} " + cb_obj.x.toFixed({xdigits}) + " {xu}"'
-            f' + " &nbsp;&nbsp; {yn} " + cb_obj.y.toFixed({ydigits})'
-            f' + " {yu}";')
-    fig.js_on_event("mousemove", CustomJS(args=dict(div=div), code=code))
+            f' + " &nbsp;&nbsp; {yn} " + {ytxt};')
+    fig.js_on_event("mousemove", CustomJS(args=args, code=code))
     fig.js_on_event("mouseleave", CustomJS(
         args=dict(div=div), code='div.text = "&nbsp;";'))
     return div
@@ -227,19 +288,11 @@ def _add_crosshair(fig):
 # ---------------------------------------------------------------------------
 _PLOT_UID = itertools.count()
 
-# Chrome above/below the plot inside the tab: shot slider, size row, axis
-# labels, readout. Measured rather than guessed would be nicer, but the
-# figure has no stable wrapper to measure before it is laid out.
-_FIT_CHROME_PX = 215
-
-_FIT_JS = """
-const h = Math.round(window.innerHeight - chrome);
-sl.value = Math.min(sl.end, Math.max(sl.start, h));
-"""
+_FIT_CHROME_PX = 215   # fallback only; see _FIT_FN_JS
 
 # Panel renders some components into shadow roots, so a plain
 # document.querySelector can miss the container; walk shadow roots too.
-_FULLSCREEN_JS = """
+_DEEP_FIND_JS = """
 function deepFind(root, cls) {
   const hit = root.querySelector('.' + cls);
   if (hit) return hit;
@@ -251,6 +304,30 @@ function deepFind(root, cls) {
   }
   return null;
 }
+"""
+
+# How tall can the figure be and still end at the bottom of the window?
+# Measured, not guessed: the plot column's own box gives both the chrome
+# above it (its top offset) and the chrome inside it (its height minus the
+# figure's). That holds in every layout we render in -- template, notebook,
+# tools='below', fullscreen -- where a single constant could only ever be
+# right in one of them. ``chrome`` stays as a fallback for the (impossible
+# in practice) case where the container cannot be found.
+_FIT_FN_JS = """
+function fitHeight(el, sl, chrome, pad) {
+  if (!el) return Math.round(window.innerHeight - chrome);
+  const r = el.getBoundingClientRect();
+  const inner = r.height - sl.value;      // controls row + readout + extras
+  return Math.round(window.innerHeight - r.top - inner - pad);
+}
+"""
+
+_FIT_JS = _DEEP_FIND_JS + _FIT_FN_JS + """
+const h = fitHeight(deepFind(document, cls), sl, chrome, 8);
+sl.value = Math.min(sl.end, Math.max(sl.start, h));
+"""
+
+_FULLSCREEN_JS = _DEEP_FIND_JS + _FIT_FN_JS + """
 if (document.fullscreenElement) {
   document.exitFullscreen();
 } else {
@@ -263,8 +340,10 @@ if (document.fullscreenElement) {
       document.addEventListener('fullscreenchange', () => {
         if (document.fullscreenElement === el) {
           el._gvPrev = sl.value;
-          sl.value = Math.min(sl.end, Math.max(sl.start,
-                              window.screen.height - 110));
+          requestAnimationFrame(() => {      // let the layout settle first
+            const h = fitHeight(el, sl, 110, 4);
+            sl.value = Math.min(sl.end, Math.max(sl.start, h));
+          });
         } else if (el._gvPrev !== undefined) {
           sl.value = el._gvPrev;
         }
@@ -291,6 +370,8 @@ class ImagePane:
         self.mapper = LinearColorMapper(palette=_palette(cmap), low=0, high=255)
         self.cds = ColumnDataSource(dict(image=[], x=[], y=[], dw=[], dh=[]))
         self.display = "density"
+        self.cmap = cmap                # kept so the download uses them too
+        self.flip_y = bool(flip_y)
         self._last = None               # args of the latest update()
         fig = figure(height=height, sizing_mode="stretch_width",
                      x_axis_label=xlabel, y_axis_label=ylabel,
@@ -342,14 +423,20 @@ class ImagePane:
             margin=(18, 3),
             description="fullscreen this panel (ESC to leave)")
         self.js_fit = self.w_fit.js_on_click(
-            args=dict(sl=self.w_height, chrome=_FIT_CHROME_PX), code=_FIT_JS)
+            args=dict(sl=self.w_height, chrome=_FIT_CHROME_PX, cls=self._cls),
+            code=_FIT_JS)
         self.js_fullscreen = self.w_fullscreen.js_on_click(
             args=dict(sl=self.w_height, cls=self._cls), code=_FULLSCREEN_JS)
+        self.w_download = pn.widgets.FileDownload(
+            callback=self._export_png, filename="gather.png",
+            label="⤓ full image", button_type="light", width=118,
+            margin=(18, 3), disabled=True,
+            description="download full image")
 
     def size_controls(self):
-        """Compact height slider + fit + fullscreen row."""
+        """Compact height slider + fit + fullscreen + download row."""
         return pn.Row(self.w_height, self.w_fit, self.w_fullscreen,
-                      margin=0)
+                      self.w_download, margin=0)
 
     def frame(self, *extra, controls=True):
         """The plot, its readout and ``extra``, in the fullscreen container."""
@@ -360,6 +447,7 @@ class ImagePane:
 
     def set_cmap(self, name: str):
         self.mapper.palette = _palette(name)   # density mode only
+        self.cmap = name
 
     def set_display(self, mode: str):
         """Switch density <-> wiggle; redraws from the latest data."""
@@ -377,7 +465,7 @@ class ImagePane:
             self._cds_wig.data = dict(xs=[], ys=[])
             self._cds_fill.data = dict(xs=[], ys=[])
         if self._last is not None:
-            self.update(*self._last)
+            self.update(*self._last)         # ... which resyncs the download
 
     def update(self, arr2d, clim, x0=0.0, dx=1.0, y0=0.0, dy=1.0):
         """arr2d: (nx, ny) with axis 0 on x. Decimates before shipping."""
@@ -386,6 +474,34 @@ class ImagePane:
             self._update_wiggle(arr2d, clim, x0, dx, y0, dy)
         else:
             self._update_image(arr2d, clim, x0, dx, y0, dy)
+        self._sync_download()
+
+    # -- full-resolution download -------------------------------------------
+    # What the browser gets is stride-decimated to MAX_PX and, in wiggle mode,
+    # to MAX_WIGGLE traces; bokeh's own save tool then snapshots the canvas at
+    # whatever size the figure happens to be on screen. This button instead
+    # re-renders ``_last`` -- the processed array and its clim, i.e. filter,
+    # gain, polarity and clip percentile already applied -- at one pixel per
+    # trace and per sample, through this pane's colormap and display mode.
+    def _export_png(self):
+        import io
+        arr, clim = self._last[0], self._last[1]
+        rgb = render_gather(arr, clim, display=self.display, cmap=self.cmap,
+                            flip_y=self.flip_y)
+        return io.BytesIO(png_bytes(rgb))
+
+    def _sync_download(self):
+        """Enable the button and put the output size in its tooltip."""
+        if self._last is None:
+            self.w_download.disabled = True
+            return
+        nx, nt = self._last[0].shape
+        w, h = raster_size(nx, nt, self.display)
+        over = w * h > _render.MAX_EXPORT_PIXELS
+        self.w_download.disabled = over
+        self.w_download.description = (
+            f"gather too large to export ({w * h / 1e6:.0f} MP)" if over
+            else f"download full image ({w} × {h} px)")
 
     def _update_image(self, arr2d, clim, x0, dx, y0, dy):
         nx, ny = arr2d.shape
@@ -418,6 +534,10 @@ class ImagePane:
 _WIN_COLORS = ("#e6741e", "#2ca02c", "#9467bd", "#d62728", "#17becf",
                "#8c564b")
 _SPEC_SIZES = {"S": (180, 650), "M": (240, 900), "L": (320, None)}
+# 'per trace' draws the window's traces individually; past this many the
+# curves stop being distinguishable and the browser starts to hurt, so the
+# traces are evenly subsampled and the legend says how many are shown.
+_MAX_SPEC_CURVES = 48
 PROC_MAX_BYTES = 512 * 1024 ** 2   # process whole volumes up to this size
 
 
@@ -453,20 +573,23 @@ class WindowTool:
                                    empty_value=_WIN_COLORS[0],
                                    description="draw polygon window"))
 
-        self.cds_spec = ColumnDataSource(dict(xs=[], ys=[], color=[], label=[]))
+        self.cds_spec = ColumnDataSource(dict(xs=[], ys=[], color=[], label=[],
+                                              alpha=[], width=[]))
         sfig = figure(height=_SPEC_SIZES["M"][0], max_width=_SPEC_SIZES["M"][1],
                       sizing_mode="stretch_width",
                       x_axis_label="frequency (Hz)",
-                      y_axis_label="amplitude (dB)",
+                      y_axis_label="amplitude",
                       tools="pan,wheel_zoom,box_zoom,reset,save")
-        sfig.multi_line(xs="xs", ys="ys", line_color="color", line_width=2,
+        sfig.multi_line(xs="xs", ys="ys", line_color="color",
+                        line_width="width", line_alpha="alpha",
                         legend_field="label", source=self.cds_spec)
         sfig.legend.location = "top_right"
         sfig.toolbar.logo = None
         _add_crosshair(sfig)              # compare peak heights along a line
         sfig.visible = False
         self.spec_fig = sfig
-        self.spec_readout = _coord_readout(sfig, "freq", "Hz", "amp", "dB")
+        self.spec_readout = _coord_readout(sfig, "freq", "Hz", "amp", "dB",
+                                           yaxis=sfig.yaxis[0])
         self.spec_readout.visible = False
 
         # f-k panel (first window): freq on y, wavenumber on x
@@ -491,23 +614,36 @@ class WindowTool:
         self.fk_readout.visible = False
 
         self.w_btn = pn.widgets.Button(name="compute spectrum",
-                                       button_type="primary", width=205)
+                                       button_type="primary", **_W)
         self.w_btn.on_click(lambda e: self.compute())
         self.w_fk = pn.widgets.Button(
-            name="f-k spectrum", width=205,
+            name="f-k spectrum", **_W,
             description="2-D f-k amplitude spectrum of the first window")
         self.w_fk.on_click(lambda e: self.compute_fk())
         self.w_export = pn.widgets.FileDownload(callback=self._export,
                                                 filename="windows.json",
-                                                label="export JSON",
-                                                width=205)
-        self.w_import = pn.widgets.FileInput(accept=".json", width=205)
+                                                label="export JSON", **_W)
+        self.w_import = pn.widgets.FileInput(accept=".json", **_WFILE)
         self.w_import.param.watch(self._import, "value")
         self.w_clear = pn.widgets.Button(
-            name="clear windows", width=205,
+            name="clear windows", **_W,
             description="remove all drawn windows (and their spectra)")
         self.w_clear.on_click(lambda e: self.clear_windows())
-        self.w_size = pn.widgets.Select(name="size", value="M", width=205,
+        self.w_scale = pn.widgets.Select(
+            name="y axis", value="amplitude", **_W,
+            options=["amplitude", "dB"],
+            description="linear amplitude, normalized to the window's peak -- "
+                        "shows where the energy actually is; or dB, which "
+                        "stretches the weak tail and the noise floor")
+        self.w_scale.param.watch(lambda e: self.refresh(), "value")
+        self.w_traces = pn.widgets.Select(
+            name="traces", value="per trace", **_W,
+            options=["per trace", "mean", "middle trace"],
+            description="how the window's traces reach the plot: each one "
+                        "drawn (nothing combined), their magnitudes averaged, "
+                        "or just the middle trace")
+        self.w_traces.param.watch(lambda e: self.refresh(), "value")
+        self.w_size = pn.widgets.Select(name="size", value="M", **_W,
                                         options=list(_SPEC_SIZES),
                                         description="spectrum panel size")
         self.w_size.param.watch(lambda e: self._resize(e.new), "value")
@@ -557,14 +693,37 @@ class WindowTool:
 
     # -- spectra -------------------------------------------------------------
     def compute(self):
-        """Average amplitude spectrum (dB, peak-normalized) per window, from
-        the currently displayed (filtered) gather."""
+        """Raw DFT amplitude spectrum of the data inside each window.
+
+        No taper, no averaging, no smoothing of any kind: each trace's gated
+        samples go straight into ``rfft`` and what is plotted is |X| in dB,
+        normalized by the window's own peak. ``traces`` decides how the
+        window's traces reach the plot -- ``per trace`` draws each one
+        (nothing combined), ``mean`` averages the magnitudes, ``middle
+        trace`` takes the one at the window's centre.
+
+        Two honest consequences of "no processing", both inherent to the DFT
+        of a finite, rectangularly cut record rather than bugs:
+
+        * the gate is a boxcar, so its own sidelobes fall away only as 1/f.
+          Roughly 40 dB below the peak you stop reading the data and start
+          reading the window. A taper would fix that, but a taper is exactly
+          a convolution of the spectrum (periodic Hann == (-1/4, 1/2, -1/4)
+          on the complex spectrum) -- i.e. smoothing, which is the thing
+          being asked for here.
+        * a single trace's periodogram is a 2-degree-of-freedom estimate: its
+          scatter is real, does not shrink as the record gets longer, and is
+          partly the process, partly the estimator. ``mean`` trades that
+          scatter for sqrt(N) less variance, which is why it looks smooth.
+        """
         if self.pane._last is None:
             return
         arr, _clim, x0, dx, y0, dy = self.pane._last
         arr = np.asarray(arr, dtype=np.float32)
         nx, nt = arr.shape
-        xs, ys, colors, labels = [], [], [], []
+        mode = self.w_traces.value
+        in_db = self.w_scale.value == "dB"
+        xs, ys, colors, labels, alphas, widths = [], [], [], [], [], []
         rect_colors, poly_colors = [], []
         for k, win in enumerate(self.windows()):
             color = _WIN_COLORS[k % len(_WIN_COLORS)]
@@ -575,20 +734,49 @@ class WindowTool:
             if cols.size == 0 or rows.size < 8:       # window too small
                 continue
             k0, k1 = int(rows[0]), int(rows[-1]) + 1
-            gated = arr[cols, k0:k1] * m[cols, k0:k1]
-            spec = np.abs(np.fft.rfft(gated, axis=-1)).mean(axis=0)
+            gated = arr[cols, k0:k1] * m[cols, k0:k1]     # the window, as cut
+            spec = np.abs(np.fft.rfft(gated, axis=-1))    # the DFT. that's it.
             freq = np.fft.rfftfreq(k1 - k0, dy).astype("f4")
-            db = (20.0 * np.log10(spec / (spec.max() + 1e-30) + 1e-6))                 .astype("f4")
-            xs.append(freq)
-            ys.append(db)
-            colors.append(color)
-            labels.append(f"{win['kind']} {k + 1}")
+            ntr = cols.size
+            if mode == "mean":
+                curves = [spec.mean(axis=0)]
+                note, alpha, width = f"mean of {ntr} tr", 1.0, 2
+            elif mode == "middle trace":
+                j = ntr // 2
+                curves = [spec[j]]
+                note, alpha, width = f"trace {int(cols[j])}", 1.0, 2
+            else:                                          # per trace: as-is
+                step = max(1, -(-ntr // _MAX_SPEC_CURVES))
+                curves = list(spec[::step])
+                note = (f"{len(curves)} tr" if step == 1
+                        else f"{len(curves)} of {ntr} tr")
+                alpha, width = (0.9, 1.5) if len(curves) < 4 else (0.35, 1)
+            # normalize by the peak of what is actually drawn, so the top of
+            # the plot is 1.0 (0 dB) in every mode; one ref for all curves of
+            # a window keeps their relative amplitudes readable
+            ref = max(float(c.max()) for c in curves) + 1e-30
+            for c in curves:
+                y = c / ref                      # amplitude, 1.0 at the peak
+                if in_db:
+                    y = 20.0 * np.log10(y + 1e-6)
+                xs.append(freq)
+                ys.append(y.astype("f4"))
+                colors.append(color)
+                # bokeh groups equal legend_field values into a single entry,
+                # so an overlay of 48 curves still shows one legend row
+                labels.append(f"{win['kind']} {k + 1} · {note} · "
+                              f"df {freq[1]:.3g} Hz")
+                alphas.append(alpha)
+                widths.append(width)
         # recolor the drawn windows so they match their curves
         if len(rect_colors) == len(self.cds_rect.data["x"]):
             self.cds_rect.data = dict(self.cds_rect.data, color=rect_colors)
         if len(poly_colors) == len(self.cds_poly.data["xs"]):
             self.cds_poly.data = dict(self.cds_poly.data, color=poly_colors)
-        self.cds_spec.data = dict(xs=xs, ys=ys, color=colors, label=labels)
+        self.spec_fig.yaxis.axis_label = "amplitude (dB)" if in_db \
+            else "amplitude"
+        self.cds_spec.data = dict(xs=xs, ys=ys, color=colors, label=labels,
+                                  alpha=alphas, width=widths)
         self.spec_fig.visible = bool(xs)
         self.spec_readout.visible = bool(xs)
 
@@ -609,7 +797,7 @@ class WindowTool:
             return
         j0, j1 = int(cols[0]), int(cols[-1]) + 1
         k0, k1 = int(rows[0]), int(rows[-1]) + 1
-        gated = arr[j0:j1, k0:k1] * m[j0:j1, k0:k1]
+        gated = arr[j0:j1, k0:k1] * m[j0:j1, k0:k1]  # the window, as cut
         spec = np.fft.rfft(gated, axis=1)            # time -> f (>= 0)
         # trace -> k with the e^{+2pi i k x} kernel (ifft; scale irrelevant
         # after normalization) so that events dipping toward increasing trace
@@ -665,7 +853,8 @@ class WindowTool:
         """Remove every drawn window and hide the (now empty) spectra."""
         self.cds_rect.data = dict(x=[], y=[], width=[], height=[], color=[])
         self.cds_poly.data = dict(xs=[], ys=[], color=[])
-        self.cds_spec.data = dict(xs=[], ys=[], color=[], label=[])
+        self.cds_spec.data = dict(xs=[], ys=[], color=[], label=[],
+                                  alpha=[], width=[])
         self.cds_fk.data = dict(image=[], x=[], y=[], dw=[], dh=[])
         self.spec_fig.visible = self.spec_readout.visible = False
         self.fk_fig.visible = self.fk_readout.visible = False
@@ -690,13 +879,10 @@ class WindowTool:
         """Analysis-window I/O (drawing happens via the toolbar tools)."""
         key = ("window", sidebar)
         if key not in self._cards:
-            hint = pn.pane.HTML(
-                "<div style='font-size:11px;color:#5f6368;margin:0 0 2px 4px'>"
-                "box tool: SHIFT+drag &middot; polygon tool:<br>"
-                "click vertices, ESC ends &middot; BACKSPACE deletes</div>",
-                margin=(0, 5))
             self._cards[key] = pn.Card(
-                hint, self.w_clear, self.w_export,
+                _hint("box tool: SHIFT+drag &middot; polygon tool: click "
+                      "vertices, ESC ends &middot; BACKSPACE deletes"),
+                self.w_clear, self.w_export,
                 _labeled(self.w_import, "import windows (.json)"),
                 title="Window", **_card_style(sidebar))
         return self._cards[key]
@@ -706,7 +892,8 @@ class WindowTool:
         key = ("spectrum", sidebar)
         if key not in self._cards:
             self._cards[key] = pn.Card(
-                self.w_btn, self.w_fk, self.w_size,
+                self.w_btn, self.w_traces, self.w_scale, self.w_fk,
+                self.w_size,
                 title="Spectrum", **_card_style(sidebar))
         return self._cards[key]
 
@@ -755,39 +942,38 @@ class PickTool:
         self._shot = 0
         self.w_export = pn.widgets.FileDownload(callback=self._export,
                                                 filename="picks.csv",
-                                                label="export CSV",
-                                                width=205)
-        self.w_import = pn.widgets.FileInput(accept=".csv", width=205)
+                                                label="export CSV", **_W)
+        self.w_import = pn.widgets.FileInput(accept=".csv", **_WFILE)
         self.w_import.param.watch(self._import, "value")
         self.w_snap = pn.widgets.Select(
-            name="snap", value="off", width=205,
+            name="snap", value="off", **_W,
             options=["off", "peak", "trough", "|max|"],
             description="snap picks to the nearest extremum of their trace "
                         "(searches +-30 ms)")
         self.w_sta = pn.widgets.FloatInput(name="STA (s)", value=0.02,
-                                           start=0.001, step=0.01, width=97,
+                                           start=0.001, step=0.01, **_W,
                                            description="short-term window")
         self.w_lta = pn.widgets.FloatInput(name="LTA (s)", value=0.2,
-                                           start=0.01, step=0.05, width=97,
+                                           start=0.01, step=0.05, **_W,
                                            description="long-term window")
         self.w_thr = pn.widgets.FloatInput(name="threshold", value=4.0,
-                                           start=1.1, step=0.5, width=97,
+                                           start=1.1, step=0.5, **_W,
                                            description="STA/LTA trigger ratio")
         self.w_auto = pn.widgets.Button(
-            name="auto pick (STA/LTA)", button_type="primary", width=205,
+            name="auto pick (STA/LTA)", button_type="primary", **_W,
             description="first breaks of the current shot from the displayed "
                         "(filtered) gather; refine by dragging or snapping")
         self.w_auto.on_click(lambda e: self.auto_pick())
         self.w_clear = pn.widgets.Button(
-            name="clear shot", width=97,
+            name="clear shot", **_W,
             description="remove all picks on the current shot")
         self.w_clear.on_click(lambda e: self.clear_shot())
         self.w_clear_all = pn.widgets.Button(
-            name="clear all", width=97, button_type="light",
+            name="clear all", **_W,
             description="remove the picks of every shot")
         self.w_clear_all.on_click(lambda e: self.clear_all())
         self.w_clear_fb = pn.widgets.Button(
-            name="clear picks", width=97,
+            name="clear picks", **_W,
             description="remove the current shot's picks (retry with new "
                         "STA/LTA parameters)")
         self.w_clear_fb.on_click(lambda e: self.clear_shot())
@@ -920,14 +1106,11 @@ class PickTool:
         """Manual event picking: snap refinement + pick I/O."""
         key = ("picking", sidebar)
         if key not in self._cards:
-            hint = pn.pane.HTML(
-                "<div style='font-size:11px;color:#5f6368;margin:0 0 2px 4px'>"
-                "point toolbar tool: tap adds, drag moves,<br>"
-                "tap-select + BACKSPACE deletes one</div>",
-                margin=(0, 5))
             self._cards[key] = pn.Card(
-                hint, self.w_snap,
-                pn.Row(self.w_clear, self.w_clear_all),
+                _hint("point toolbar tool: tap adds, drag moves, tap-select "
+                      "+ BACKSPACE deletes one"),
+                self.w_snap,
+                pn.Row(self.w_clear, self.w_clear_all, **_W),
                 self.w_export,
                 _labeled(self.w_import, "import picks (.csv)"),
                 title="Event picking", **_card_style(sidebar))
@@ -938,8 +1121,9 @@ class PickTool:
         key = ("fb", sidebar)
         if key not in self._cards:
             self._cards[key] = pn.Card(
-                self.w_auto, pn.Row(self.w_sta, self.w_lta),
-                pn.Row(self.w_thr, self.w_clear_fb),
+                self.w_auto,
+                pn.Row(self.w_sta, self.w_lta, self.w_thr, **_W),
+                self.w_clear_fb,
                 title="FB picking", **_card_style(sidebar))
         return self._cards[key]
 
@@ -988,13 +1172,15 @@ def view_gather(arr2d, dt=1.0, t0=0.0, cmap="seismic", perc=98.0, title=""):
     state["clim"] = robust_clim(state["sample"], perc)
     pane = ImagePane(cmap=cmap)
 
+    pane.w_download.filename = f"{_slug(title)}.png"
+
     def redraw():
         pane.update(arr2d, state["clim"], y0=t0, dy=dt)
 
     redraw()
     header = pn.pane.Markdown(f"### {title or 'gather'}")
     return pn.Column(header, _display_controls(state, [pane], redraw, cmap, perc),
-                     pane.figure, sizing_mode="stretch_width")
+                     pane.frame(), sizing_mode="stretch_width")
 
 
 def _colorscale(name: str):
@@ -1229,6 +1415,7 @@ class ShotBrowser:
         self._tools_sidebar = tools == "sidebar"
         self._help = None
         self.wt = None
+        self._stem = _slug(g.name)
         if self._per_shot_3d:
             self.sv = VolumeView3D(g.shot(0), names=g.axes[1:3], dt=g.dt,
                                    t0=g.t0, cmap=cmap, clim=state["clim"])
@@ -1273,6 +1460,8 @@ class ShotBrowser:
         if self.wt is not None:
             self.wt.refresh()                 # keep spectra in sync
             self.pt.set_shot(self.ishot)      # picks follow the shot
+            self.pane.w_download.filename = \
+                f"{self._stem}_shot{self.ishot:04d}.png"
         if self.on_shot_change is not None:
             self.on_shot_change(self.ishot)
 
@@ -1449,6 +1638,7 @@ class Workspace:
             self._redraws.append(self._draw2d)
             self._wt2d = WindowTool(self._pane2d)
             self._pt2d = PickTool(self._pane2d)
+            self._pane2d.w_download.filename = f"{_slug(g.name)}.png"
             self._draw2d()
             help_btn, help_body = _gesture_help()
             if self._tools_sidebar:

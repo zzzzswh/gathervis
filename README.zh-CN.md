@@ -108,6 +108,7 @@ gathervis vel.npy --axes x y depth --dt 10 --cmap rainbow
 | 调整三维长方体比例 | 每个维度各一条 stretch 滑条（1.0 居中，0.125×–8×） |
 | 跳到某一炮 | 拖炮号滑条、*go to shot* 输入，或在 Geometry 页点炮点 |
 | 调谱面板大小 | Spectrum 块里的 *size*（S / M / L） |
+| 存图 | **⤓ full image** 按钮（原分辨率全图）· 工具栏 save 图标（当前视野，屏幕分辨率） |
 
 同一份速查在应用里点 *? gestures* 按钮随时可看。
 
@@ -147,12 +148,43 @@ memmap 懒加载不受影响。Volume-slices 页跟随同一条链：512 MB 以�
 ### 画窗 → 谱 → 导出
 
 直接在道集上画**矩形**（SHIFT+拖拽，或点-移-点）或**多边形**（逐点点击，ESC
-收尾）分析窗，点 *compute spectrum*：每窗一条峰值归一的 dB 振幅谱，谱线与窗
-自动同色；或对第一个窗算 **f-k 谱**（地球物理符号约定：向道号增大方向倾斜的
-同相轴落在正 k）。换炮、改滤波、改增益后全部自动重算。窗定义可**导出 / 导入
+收尾）分析窗，点 *compute spectrum*：对门控后的样点做纯 DFT，画 `|rfft|` 相对
+本窗峰值的 dB。不加窗函数、不做归一、不做任何平滑——窗函数本身就是对频谱做
+卷积（周期 Hann 严格等于对复谱做 `(-1/4, 1/2, -1/4)` 三点卷积），所以不用。
+`traces` 选窗内各道怎么进图：**per trace**（逐道画，不做任何合并）、**mean**、
+**middle trace**；`y axis` 切换线性**振幅**（归一到最响的那条曲线峰值为 1.0，
+主频一眼可见）和 **dB**（把弱尾巴和噪声底拉开看）。图例写明画的是什么，以及
+频率间隔 `df = 1/时窗长度`。
+
+「不做处理」有两个必然的代价，它们是矩形截断后 DFT 的固有性质，不是 bug：
+矩形门的旁瓣只按 1/f 衰减，所以大约低于峰值 40 dB 之后，你读到的是窗而不是
+数据；单道周期图只有 2 个自由度，它的抖动是真实的，且不随记录变长而减小。
+多道平均把抖动压掉 `sqrt(N)` 倍——但仅对**相互独立**的道成立；在相干性好的
+道集上各道近乎复制品，平均值和单道几乎没区别。窗定义可**导出 / 导入
 JSON**。信号窗 vs 噪声窗的对比十秒钟搞定。
 
 <img src="https://raw.githubusercontent.com/zzzzswh/gathervis/main/docs/images/windows_spectra.png" width="720" alt="分析窗及其谱"/>
+
+### 下载原图
+
+面板上屏之前会按像素预算做 stride 抽稀，而 bokeh 自带的 save 工具存的是 canvas
+截图、尺寸取决于图当前在屏幕上多大——两者都给不了"按数据自身分辨率"的图。
+*fit* / *fullscreen* 右边的 **⤓ full image** 按钮可以：它把道集按一道一像素、一采样一像素
+重新渲染，下载无损 PNG，色标、变密度 / wiggle、剪切百分位、极性、梯形滤波、
+AGC / 道均衡全部与屏幕一致。wiggle 模式下画的是**全部道**，而不是浏览器拿到的
+那个子集。不依赖 matplotlib、不用无头浏览器——PNG 由 numpy + 标准库 zlib 写出。
+
+想要局部就用工具栏自带的 save 图标（当前视野，屏幕分辨率）。
+
+脚本里批量出图同理：
+
+```python
+from gathervis.process import bandpass, agc
+from gathervis.render import save_png
+
+a = agc(bandpass(g.shot(7), g.dt, f3=60, f4=80), g.dt)
+save_png("shot007.png", a, cmap="gray")            # 或 display="wiggle"
+```
 
 ### 同相轴拾取
 

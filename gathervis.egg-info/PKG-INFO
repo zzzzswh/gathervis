@@ -1,6 +1,6 @@
 Metadata-Version: 2.4
 Name: gathervis
-Version: 0.14.4
+Version: 0.15.0
 Summary: Web-based seismic shot-gather viewer for remote GPU servers: lazy loading of huge files, SEG-Y import, cigvis-style 3-D volume slicing, geometry-linked browsing, filters/AGC, windowed spectra and f-k, first-break picking.
 Author: zzzzswh
 License-Expression: MIT
@@ -154,6 +154,7 @@ that shot and jumps back to its gather, with the active spread highlighted:
 | Reshape the 3-D cuboid | one *stretch* slider per axis (1.0 centered, 0.125×–8×) |
 | Jump to a shot | drag the slider, type in *go to shot*, or tap a source on the Geometry tab |
 | Resize the spectrum panel | *size* (S / M / L) in the Spectrum block |
+| Save the gather as an image | the **⤓ full image** button (full resolution) · the toolbar *save* icon (current view, screen resolution) |
 
 The same cheat-sheet lives in-app behind the *? gestures* button.
 
@@ -198,12 +199,51 @@ preserved. Edit a corner frequency and the panel re-filters instantly.
 
 Draw **rectangles** (SHIFT+drag, or click-move-click) or **polygons** (click
 vertices, ESC to finish) directly on a gather, then hit *compute spectrum*:
-one peak-normalized dB amplitude spectrum per window, color-matched to its
-window, recomputed automatically when you change shot or filter. *Export
+the plain DFT of the gated samples, `|rfft|` in dB against the window's own
+peak. No taper, no normalization, no smoothing — a taper is literally a
+convolution of the spectrum (periodic Hann is `(-1/4, 1/2, -1/4)` on the
+complex spectrum), so there isn't one. `traces` picks how the window's traces
+reach the plot: **per trace** (each drawn, nothing combined), **mean**, or
+**middle trace**, and `y axis` switches between linear **amplitude**
+(normalized so the loudest curve peaks at 1.0 — this is where you see the
+dominant frequency) and **dB** (which stretches the weak tail and the noise
+floor into view). The legend states what was plotted and the frequency
+spacing `df = 1/(gate length)`.
+
+Two consequences come with asking for no processing, both properties of the
+DFT of a rectangularly cut record rather than bugs: the boxcar gate's own
+sidelobes fall off only as 1/f, so roughly 40 dB down you are reading the
+window rather than the data; and one trace's periodogram has 2 degrees of
+freedom, so its scatter is real and does not shrink with record length.
+Averaging cuts that scatter by `sqrt(N)` — but only for *independent* traces;
+on a coherent gather the traces are near-copies and the mean barely differs
+from one of them. *Export
 windows* downloads the definitions as JSON (trace/time coordinates + dt) for
 reuse elsewhere. Signal window vs. noise window comparisons take ten seconds.
 
 <img src="https://raw.githubusercontent.com/zzzzswh/gathervis/main/docs/images/windows_spectra.png" width="720" alt="analysis windows and their spectra"/>
+
+### Download the full image
+
+The panel you see is stride-decimated to a pixel budget before it goes on the
+wire, and bokeh's save tool snapshots the canvas at whatever size the figure
+happens to be — so neither gives you the data at its own resolution. The **⤓ full
+image** button next to *fit* and *fullscreen* does: it re-renders the gather at one
+pixel per trace and per sample and downloads a lossless PNG, with the colormap,
+density/wiggle mode, clip percentile, polarity, trapezoid filter and AGC /
+trace balance exactly as displayed. Wiggle mode draws *every* trace, not the
+subset the browser gets. No matplotlib, no headless browser — the PNG is
+written by numpy + stdlib zlib.
+
+Same thing from a script, for batch figures:
+
+```python
+from gathervis.process import bandpass, agc
+from gathervis.render import save_png
+
+a = agc(bandpass(g.shot(7), g.dt, f3=60, f4=80), g.dt)
+save_png("shot007.png", a, cmap="gray")            # or display="wiggle"
+```
 
 ## Remote usage (pick one)
 
@@ -234,6 +274,10 @@ declare other semantics explicitly with `axes=`. `axes` says what the array
 * **Two rendering primitives.** 2-D panels are bokeh images/wiggles; volumes
   are plotly WebGL slice planes. Both are fed by the same decimate → uint8
   pipeline.
+* **Offscreen twin.** Image export bypasses the decimation entirely: the
+  same processed array is rasterized at native resolution and encoded as a
+  PNG with numpy + stdlib zlib, so no plotting or imaging dependency is
+  added for it.
 * **Live scrubbing.** Sliders update while dragging; the 3-D camera, stretch
   factors, and drawn windows all survive every update. Every 2-D panel has
   x-only / y-only wheel-zoom for per-axis scaling, and a live cursor readout

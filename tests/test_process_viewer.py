@@ -435,10 +435,14 @@ def test_window_spectrum_and_export():
     _draw_rect(b.wt, x=40, y=0.6, w=30, h=0.5)
     b.wt.compute()
     d = b.wt.cds_spec.data
-    assert len(d["xs"]) == 1 and b.wt.spec_fig.visible
+    assert b.wt.spec_fig.visible
+    assert len(d["xs"]) > 1                           # one curve per trace
     fpk = d["xs"][0][int(np.argmax(d["ys"][0]))]
     assert abs(fpk - 30.0) < 2.5                      # peak at the sine
-    assert d["label"] == ["rect 1"]
+    # the legend carries what was plotted, not just a name
+    assert d["label"][0].startswith("rect 1 · ")
+    assert "tr" in d["label"][0] and "df" in d["label"][0]
+    assert len(set(d["label"])) == 1                  # ... as one legend entry
     assert list(b.wt.cds_rect.data["color"]) == [d["color"][0]]  # color-matched
     # after a shot change the visible spectrum recomputes; windows persist
     b.set_shot(2)
@@ -910,8 +914,8 @@ def test_size_controls_are_above_the_figure(line):
     col = b.panel()[1]
     row = col.objects[0]
     assert isinstance(row, pn.Row)
-    assert [b.pane.w_height, b.pane.w_fit, b.pane.w_fullscreen] \
-        == list(row.objects)
+    assert [b.pane.w_height, b.pane.w_fit, b.pane.w_fullscreen,
+            b.pane.w_download] == list(row.objects)
 
 
 def test_frame_carries_the_fullscreen_classes(line):
@@ -1015,3 +1019,413 @@ def test_depth_volume_untouched_by_chain():
     ws._w_ftype.value = "band-pass"        # meaningless along depth: raw
     assert ws.slices.vol is ws.g.data
     assert not ws._proc_note.visible       # and no scary note either
+
+
+# ---------------- v0.15: full-resolution image export ----------------
+def _decode_png(blob):
+    """Minimal stdlib PNG reader (8-bit RGB, 'Up' filter) for the tests."""
+    import struct
+    import zlib
+    assert blob[:8] == b"\x89PNG\r\n\x1a\n"
+    i, idat, hdr = 8, b"", None
+    while i < len(blob):
+        n = struct.unpack(">I", blob[i:i + 4])[0]
+        tag, data = blob[i + 4:i + 8], blob[i + 8:i + 8 + n]
+        crc = struct.unpack(">I", blob[i + 8 + n:i + 12 + n])[0]
+        assert crc == zlib.crc32(tag + data) & 0xFFFFFFFF
+        if tag == b"IHDR":
+            hdr = struct.unpack(">IIBBBBB", data)
+        elif tag == b"IDAT":
+            idat += data
+        i += 12 + n
+    w, h, depth, color, comp, filt, inter = hdr
+    assert (depth, color, comp, filt, inter) == (8, 2, 0, 0, 0)
+    raw = np.frombuffer(zlib.decompress(idat), np.uint8).reshape(h, w * 3 + 1)
+    assert (raw[:, 0] == 2).all()                  # every row uses filter "Up"
+    up = np.cumsum(raw[:, 1:].astype(np.uint16), axis=0, dtype=np.uint16) % 256
+    return up.astype(np.uint8).reshape(h, w, 3)
+
+
+def test_png_roundtrip_is_lossless():
+    from gathervis.render import png_bytes
+    rng = np.random.default_rng(0)
+    rgb = rng.integers(0, 256, (37, 53, 3), dtype=np.uint8)
+    assert np.array_equal(_decode_png(png_bytes(rgb)), rgb)
+    with pytest.raises(ValueError):
+        png_bytes(np.zeros((4, 4), np.uint8))      # needs (h, w, 3)
+
+
+def test_auto_px_and_raster_size():
+    from gathervis.render import auto_px, raster_size
+    assert auto_px("density") == (1, 1)            # 0 = auto = original res
+    assert auto_px("wiggle") == (8, 1)             # wiggle needs room to swing
+    assert auto_px("density", 3, 2) == (3, 2)      # explicit wins
+    assert raster_size(40, 300, "density") == (40, 300)
+    assert raster_size(40, 300, "density", 2, 3) == (80, 900)
+    w, _ = raster_size(40, 300, "wiggle")          # + clipped-excursion margin
+    assert w == 40 * 8 + 2 * 16
+
+
+def test_render_density_is_the_data_itself():
+    from gathervis.process import quantize
+    from gathervis.render import palette_rgb, render_density
+    a = np.linspace(-1, 1, 24 * 40, dtype="f4").reshape(24, 40)
+    img = render_density(a, (-1.0, 1.0), cmap="gray")
+    assert img.shape == (40, 24, 3)                # (samples, traces) -> rows
+    assert np.array_equal(img, palette_rgb("gray")[quantize(a, (-1, 1)).T])
+    assert np.array_equal(render_density(a, (-1, 1), cmap="gray",
+                                         flip_y=False), img[::-1])
+    big = render_density(a, (-1, 1), cmap="gray", px_trace=3, px_sample=2)
+    assert big.shape == (80, 72, 3)
+
+
+def test_render_wiggle_draws_every_trace():
+    from gathervis.render import render_wiggle
+    nx, nt, px = 30, 120, 8
+    a = np.zeros((nx, nt), "f4")
+    a[:, 60] = 1.0                                 # one positive spike each
+    img = render_wiggle(a, (-1.0, 1.0), px_trace=px)
+    assert img.shape == (nt, nx * px + 2 * 2 * px, 3)
+    ink = img[..., 0] < 128
+    assert ink.any() and not ink.all()
+    # every trace is drawn (no MAX_WIGGLE decimation): each baseline has ink
+    for i in range(nx):
+        assert ink[:, int(round(2 * px + px * (i + 0.5)))].any()
+    # the spike row is filled to the right of its baseline (variable area)
+    assert ink[60].sum() > ink[0].sum()
+
+
+def test_export_budget_is_enforced():
+    import gathervis.render as R
+    assert R.MAX_EXPORT_PIXELS > 10_000_000        # generous by default
+    small = np.zeros((100, 100), "f4")             # checked before allocating
+    for fn in (R.render_density, R.render_wiggle):
+        with pytest.raises(MemoryError, match="budget"):
+            fn(small, (-1.0, 1.0), px_trace=100, px_sample=100)
+
+
+def test_download_button_sits_with_fit_and_fullscreen(line):
+    ws = Workspace(line)
+    pane = ws.browser.pane
+    row = list(pane.size_controls())
+    assert row[-1] is pane.w_download                  # right of fullscreen
+    assert pane.w_download.description.startswith("download full image")
+    assert not pane.w_download.disabled
+    assert pane.w_download in pane.frame().select(pn.widgets.FileDownload)
+
+
+def test_download_is_full_resolution_unlike_the_panel():
+    """The panel ships a decimated image; the download must not be."""
+    g = synthetic_line(ns=2, nr=40, nt=2000)       # nt > MAX_PX[1] = 1600
+    pane = Workspace(g).browser.pane
+    shown = np.asarray(pane.cds.data["image"][0])
+    assert shown.shape[0] < 2000                   # screen copy is decimated
+    png = _decode_png(pane.w_download.callback().getvalue())
+    assert png.shape == (2000, 40, 3)              # download is not
+    assert "40 × 2000 px" in pane.w_download.description
+
+
+def test_download_follows_the_display_chain(line):
+    from gathervis.process import quantize
+    from gathervis.render import palette_rgb
+    ws = Workspace(line)
+    pane = ws.browser.pane
+    w_disp, w_flip, w_cmap = ws._controls[0], ws._controls[1], ws._controls[2]
+
+    raw = _decode_png(pane.w_download.callback().getvalue())
+    arr, clim = pane._last[0], pane._last[1]
+    assert np.array_equal(raw, palette_rgb("seismic")[quantize(arr, clim).T])
+
+    w_cmap.value = "petrel"                        # colormap
+    ws._w_ftype.value = "band-pass"                # filter
+    ws._w_gain.value = "AGC"                       # gain (rescales the clim)
+    w_flip.value = True                            # polarity
+    proc, clim2 = pane._last[0], pane._last[1]
+    assert not np.allclose(proc, arr)              # the chain really applied
+    assert clim2 != clim                           # ... and the clim followed
+    img = _decode_png(pane.w_download.callback().getvalue())
+    assert np.array_equal(img, palette_rgb("petrel")[quantize(proc, clim2).T])
+
+    w_disp.value = "wiggle"                        # display mode
+    nx, nt = proc.shape
+    wig = _decode_png(pane.w_download.callback().getvalue())
+    assert wig.shape == (nt, nx * 8 + 2 * 16, 3)   # every trace, room to swing
+    assert f"{nx * 8 + 2 * 16} × {nt} px" in pane.w_download.description
+
+
+def test_download_is_guarded_by_the_budget(line, monkeypatch):
+    import gathervis.render as R
+    ws = Workspace(line)
+    pane = ws.browser.pane
+    nx, nt = pane._last[0].shape
+    monkeypatch.setattr(R, "MAX_EXPORT_PIXELS", nx * nt - 1)
+    ws.browser.redraw()                            # any redraw resyncs it
+    assert pane.w_download.disabled
+    assert "too large" in pane.w_download.description
+    monkeypatch.setattr(R, "MAX_EXPORT_PIXELS", nx * nt)
+    ws.browser.redraw()
+    assert not pane.w_download.disabled
+
+
+def test_download_filename_follows_the_shot():
+    # deliberately NOT the module-scoped `line`: earlier tests rename it
+    g = synthetic_line(ns=5, nr=12, nt=48)
+    assert Workspace(g).browser.pane.w_download.filename == "gather_shot0000.png"
+    g.name = "/data/line 07.npy"                   # named dataset -> slugged
+    ws = Workspace(g)
+    assert ws.browser.pane.w_download.filename == "line_07_shot0000.png"
+    ws.browser.set_shot(4)
+    assert ws.browser.pane.w_download.filename == "line_07_shot0004.png"
+
+
+def test_download_offered_for_single_gathers_too():
+    from gathervis.viewer import view_gather
+    a = synthetic_line(ns=1, nr=20, nt=64).shot(0)
+    ws = Workspace(gv.from_array(np.asarray(a), dt=0.002))
+    dl = ws._pane2d.w_download
+    assert dl.filename == "gather.png"
+    assert _decode_png(dl.callback().getvalue()).shape == (64, 20, 3)
+    app = view_gather(a, dt=0.002, title="shot 1")
+    assert len(app.select(pn.widgets.FileDownload)) == 1
+
+
+def test_no_export_card_anywhere(line):
+    """The download is one button, not a card full of options."""
+    ws = Workspace(line)
+    titles = [c.title for c in ws.tabs[0].select(pn.Card)]
+    titles += [c.title for c in pn.Column(*ws.sidebar()).select(pn.Card)]
+    assert "Export image" not in titles
+    assert not hasattr(ws.browser, "ex")
+
+
+def test_per_shot_3d_has_no_download():
+    g = gv.from_array(np.zeros((2, 4, 5, 20), "f4"), dt=0.004)
+    ws = Workspace(g)                              # 4-D: no 2-D pane at all
+    assert not hasattr(ws.browser, "pane")
+
+
+def test_save_png_script_helper(tmp_path):
+    from gathervis.render import save_png
+    a = synthetic_line(ns=1, nr=16, nt=80).shot(0)
+    out = save_png(tmp_path / "shot.png", a, cmap="gray")
+    img = _decode_png(open(out, "rb").read())
+    assert img.shape == (80, 16, 3)
+    assert (img[..., 0] == img[..., 1]).all()      # gray cmap -> r == g == b
+    wig = save_png(tmp_path / "w.png", a, display="wiggle", px_trace=6)
+    assert _decode_png(open(wig, "rb").read()).shape[1] == 16 * 6 + 2 * 12
+
+
+# ---------------- v0.15: consistent card styling, measured fit ----------------
+def _tool_cards(ws):
+    box = pn.Column(*ws.sidebar())
+    return [c for c in box.select(pn.Card)]
+
+
+def test_cards_share_one_flat_style(line):
+    from gathervis.viewer import _CARD_CSS
+    cards = _tool_cards(Workspace(line))
+    assert len(cards) == 4                         # Window/Spectrum/picking/FB
+    for c in cards:
+        assert c.stylesheets == [_CARD_CSS]        # same sheet, not per-card
+        assert "box-shadow: none" in _CARD_CSS     # ... and it kills the shadow
+        assert c.sizing_mode == "stretch_width"
+        assert c.margin == (4, 0)
+        assert c.collapsed
+
+
+def test_card_controls_are_uniformly_sized(line):
+    """No hand-picked widths inside a card: everything stretches."""
+    for card in _tool_cards(Workspace(line)):
+        for w in card.select(pn.widgets.Widget):
+            assert w.width is None, f"{card.title}/{w.name} pins a width"
+            assert w.sizing_mode == "stretch_width", f"{card.title}/{w.name}"
+            assert w.margin == (4, 0), f"{card.title}/{w.name}"
+
+
+def test_card_buttons_use_one_colour_scheme(line):
+    """One accent per card for its main action; everything else neutral."""
+    accents = {}
+    for card in _tool_cards(Workspace(line)):
+        kinds = [b.button_type for b in card.select(pn.widgets.Button)]
+        assert "light" not in kinds                # the flat/text odd-one-out
+        assert set(kinds) <= {"default", "primary"}
+        accents[card.title] = kinds.count("primary")
+        assert accents[card.title] <= 1
+    assert accents["Spectrum"] == 1 and accents["FB picking"] == 1
+    assert accents["Window"] == 0 and accents["Event picking"] == 0
+
+
+def test_file_inputs_are_restyled(line):
+    from gathervis.viewer import _FILE_CSS
+    inputs = [w for card in _tool_cards(Workspace(line))
+              for w in card.select(pn.widgets.FileInput)]
+    assert len(inputs) == 2                        # windows.json + picks.csv
+    for w in inputs:
+        assert w.stylesheets == [_FILE_CSS]
+        assert "::file-selector-button" in _FILE_CSS
+
+
+def test_fit_measures_the_layout_instead_of_guessing(line):
+    b = ShotBrowser(line, _state(line))
+    fit = b.pane.js_fit
+    code = "".join(fit.code.values())
+    # the container class is passed in, so the JS can measure the real box
+    assert fit.args["cls"] == b.pane._cls
+    assert "getBoundingClientRect" in code
+    assert "r.height - sl.value" in code           # chrome inside the column
+    assert "window.innerHeight - r.top" in code    # chrome above it
+    # fullscreen re-uses the same measurement, not a screen-size guess
+    fs = "".join(b.pane.js_fullscreen.code.values())
+    assert "fitHeight(el, sl" in fs and "screen.height" not in fs
+
+
+def test_fit_falls_back_when_the_container_is_missing(line):
+    import gathervis.viewer as V
+    code = "".join(ShotBrowser(line, _state(line)).pane.js_fit.code.values())
+    assert "if (!el) return Math.round(window.innerHeight - chrome)" in code
+    assert V._FIT_CHROME_PX == 215                 # fallback only
+
+
+def test_download_button_is_text_not_a_bare_icon(line):
+    dl = Workspace(line).browser.pane.w_download
+    assert "full image" in dl.label                # reads, not just an arrow
+    assert dl.button_type == "light"               # matches fit / fullscreen
+
+
+# ---------------- v0.15: raw-DFT window spectra ----------------
+def test_spectrum_is_the_plain_dft_of_the_gated_samples(line):
+    """No taper, no normalization, no averaging: just |rfft| in dB."""
+    b = ShotBrowser(line, _state(line))
+    b.wt.w_traces.value = "middle trace"
+    b.wt.w_scale.value = "dB"
+    _draw_rect(b.wt, x=12, y=0.08, w=10, h=0.1)
+    b.wt.compute()
+    d = b.wt.cds_spec.data
+    assert len(d["xs"]) == 1
+
+    arr, _c, x0, dx, y0, dy = b.pane._last
+    arr = np.asarray(arr, dtype="f4")
+    m = b.wt._mask(b.wt.windows()[0], *arr.shape, x0, dx, y0, dy)
+    cols, rows = np.where(m.any(1))[0], np.where(m.any(0))[0]
+    k0, k1 = int(rows[0]), int(rows[-1]) + 1
+    spec = np.abs(np.fft.rfft(arr[cols, k0:k1] * m[cols, k0:k1], axis=-1))
+    mid = spec[cols.size // 2]
+    want = 20 * np.log10(mid / (mid.max() + 1e-30) + 1e-6)
+    assert np.allclose(d["ys"][0], want, atol=1e-4)
+    assert np.allclose(d["xs"][0], np.fft.rfftfreq(k1 - k0, dy), atol=1e-6)
+
+
+def test_single_trace_spectrum_keeps_its_scatter(line):
+    """A single trace's periodogram scatter must survive to the plot; only
+    `mean` is allowed to reduce it, and only for independent traces."""
+    g = synthetic_line(ns=2, nr=120, nt=513, noise=0.0)
+    b = ShotBrowser(g, _state(g))
+    arr = np.asarray(b.pane._last[0]).copy()
+    rng = np.random.default_rng(0)
+    arr += rng.standard_normal(arr.shape).astype("f4")   # independent per trace
+    b.pane.update(arr, b.state["clim"], y0=0, dy=g.dt)
+    _draw_rect(b.wt, x=60, y=0.5, w=120, h=0.9)
+    rough = {}
+    b.wt.w_scale.value = "dB"
+    for mode in ("middle trace", "mean"):
+        b.wt.w_traces.value = mode
+        b.wt.compute()
+        y = np.asarray(b.wt.cds_spec.data["ys"][0], dtype=float)
+        rough[mode] = float(np.abs(np.diff(y, 2)).mean())
+    assert rough["middle trace"] > 4 * rough["mean"], rough
+
+
+def test_mean_only_smooths_when_traces_are_independent(line):
+    """On a coherent gather the traces are near-copies, so averaging them
+    changes very little -- the smoothness in a real panel comes from many
+    *independent* traces, not from the averaging alone."""
+    g = synthetic_line(ns=2, nr=120, nt=513, noise=0.0)   # near-identical traces
+    b = ShotBrowser(g, _state(g))
+    _draw_rect(b.wt, x=60, y=0.5, w=120, h=0.9)
+    rough = {}
+    b.wt.w_scale.value = "dB"
+    for mode in ("middle trace", "mean"):
+        b.wt.w_traces.value = mode
+        b.wt.compute()
+        y = np.asarray(b.wt.cds_spec.data["ys"][0], dtype=float)
+        rough[mode] = float(np.abs(np.diff(y, 2)).mean())
+    assert rough["mean"] > 0.5 * rough["middle trace"], rough
+
+
+def test_per_trace_mode_draws_every_trace_as_one_legend_entry(line):
+    import gathervis.viewer as V
+    b = ShotBrowser(line, _state(line))
+    b.wt.w_traces.value = "per trace"
+    _draw_rect(b.wt, x=12, y=0.1, w=20, h=0.16)
+    b.wt.compute()
+    d = b.wt.cds_spec.data
+    ntr = len(np.where(b.wt._mask(b.wt.windows()[0], *b.pane._last[0].shape,
+                                  b.pane._last[2], b.pane._last[3],
+                                  b.pane._last[4], b.pane._last[5])
+                       .any(axis=1))[0])
+    assert len(d["xs"]) == min(ntr, V._MAX_SPEC_CURVES)
+    assert len(set(d["label"])) == 1               # bokeh shows one row
+    assert set(d["alpha"]) and max(d["alpha"]) <= 1.0
+    assert b.wt.w_traces.value in ("per trace",)
+
+
+def test_spectrum_curve_count_is_capped(line):
+    import gathervis.viewer as V
+    big = synthetic_line(ns=2, nr=400, nt=301)
+    b = ShotBrowser(big, _state(big))
+    _draw_rect(b.wt, x=200, y=0.3, w=400, h=0.3)
+    b.wt.compute()
+    n = len(b.wt.cds_spec.data["xs"])
+    assert 40 <= n <= V._MAX_SPEC_CURVES           # subsampled, not 400
+    assert "of 400 tr" in b.wt.cds_spec.data["label"][0]
+
+
+def test_spectrum_card_controls(line):
+    ws = Workspace(line)
+    card = [c for c in pn.Column(*ws.sidebar()).select(pn.Card)
+            if c.title == "Spectrum"][0]
+    names = [w.name for w in card.select(pn.widgets.Widget)]
+    assert names == ["compute spectrum", "traces", "y axis",
+                     "f-k spectrum", "size"]
+
+
+def test_y_axis_switches_between_amplitude_and_db(line):
+    b = ShotBrowser(line, _state(line))
+    assert b.wt.w_scale.value == "amplitude"        # linear by default
+    _draw_rect(b.wt, x=12, y=0.1, w=20, h=0.16)
+    for mode in ("mean", "middle trace", "per trace"):
+        b.wt.w_traces.value = mode
+        b.wt.w_scale.value = "amplitude"
+        b.wt.compute()
+        ys = [np.asarray(y, dtype=float) for y in b.wt.cds_spec.data["ys"]]
+        assert b.wt.spec_fig.yaxis[0].axis_label == "amplitude"
+        assert min(y.min() for y in ys) >= 0.0      # a ratio, never negative
+        assert abs(max(y.max() for y in ys) - 1.0) < 1e-6   # peak is 1.0
+        b.wt.w_scale.value = "dB"                   # same data, log scale
+        b.wt.compute()
+        dbs = [np.asarray(y, dtype=float) for y in b.wt.cds_spec.data["ys"]]
+        assert b.wt.spec_fig.yaxis[0].axis_label == "amplitude (dB)"
+        assert abs(max(d.max() for d in dbs)) < 1e-4    # loudest curve = 0 dB
+        # every curve is exactly the log of its linear twin: no other change
+        for lin, d in zip(ys, dbs):
+            assert np.allclose(d, 20 * np.log10(lin + 1e-6), atol=1e-3)
+
+
+def test_spectrum_readout_unit_follows_the_axis(line):
+    """The cursor readout must not bake in 'dB' when the axis can change."""
+    b = ShotBrowser(line, _state(line))
+    cbs = b.wt.spec_fig.js_event_callbacks["mousemove"]
+    code = "".join(cb.code for cb in cbs)
+    assert "axis_label.match" in code               # unit read at runtime
+    assert '" dB"' not in code                      # ... not hardcoded
+    assert any(cb.args.get("ax") is b.wt.spec_fig.yaxis[0] for cb in cbs)
+
+
+def test_fk_is_the_plain_2d_dft_too(line):
+    b = ShotBrowser(line, _state(line))
+    _draw_rect(b.wt, x=12, y=0.1, w=16, h=0.12)
+    b.wt.compute_fk()
+    img = np.asarray(b.wt.cds_fk.data["image"][0])
+    assert np.isfinite(img).all() and b.wt.fk_fig.visible
+    assert img.max() <= 0.01 and img.min() >= -121   # peak-normalized dB
+    assert not hasattr(b.wt, "_taper")               # no window function

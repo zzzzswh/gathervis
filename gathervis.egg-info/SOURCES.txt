@@ -6,6 +6,7 @@ gathervis/__main__.py
 gathervis/core.py
 gathervis/demo.py
 gathervis/process.py
+gathervis/render.py
 gathervis/viewer.py
 gathervis.egg-info/PKG-INFO
 gathervis.egg-info/SOURCES.txt
