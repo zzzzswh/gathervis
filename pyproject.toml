@@ -1,5 +1,5 @@
 [build-system]
-requires = ["setuptools>=64"]
+requires = ["setuptools>=77"]
 build-backend = "setuptools.build_meta"
 
 [project]
@@ -7,20 +7,55 @@ name = "gathervis"
 version = "0.14.4"
 description = "Web-based seismic shot-gather viewer for remote GPU servers: lazy loading of huge files, SEG-Y import, cigvis-style 3-D volume slicing, geometry-linked browsing, filters/AGC, windowed spectra and f-k, first-break picking."
 readme = "README.md"
-license = { text = "MIT" }
+license = "MIT"
+license-files = ["LICENSE"]
 keywords = ["seismic", "geophysics", "shot-gather", "segy", "visualization", "viewer", "fwi", "pre-stack", "seismology"]
 requires-python = ">=3.9"
+authors = [{ name = "zzzzswh" }]
+classifiers = [
+    "Development Status :: 4 - Beta",
+    "Intended Audience :: Science/Research",
+    "Topic :: Scientific/Engineering :: Physics",
+    "Topic :: Scientific/Engineering :: Visualization",
+    "Operating System :: OS Independent",
+    "Programming Language :: Python :: 3",
+    "Programming Language :: Python :: 3.9",
+    "Programming Language :: Python :: 3.10",
+    "Programming Language :: Python :: 3.11",
+    "Programming Language :: Python :: 3.12",
+    "Programming Language :: Python :: 3.13",
+]
+
+# Runtime deps only. The package itself never imports torch or deepwave --
+# they are only needed to *generate* synthetic data in examples/, so they
+# live in the `examples` extra. Keeping them here would make a 37 KB viewer
+# pull ~2.5 GB.
 dependencies = [
     "numpy>=1.22",
     "panel>=1.3",
     "bokeh>=3.3",
     "plotly>=5.15",
+]
+
+[project.optional-dependencies]
+segy = ["segyio"]
+examples = [
     "torch>=2.4.0,<2.11",    # <2.11: newer cu13x builds drop V100 (CC 7.0) kernels
     "deepwave>=0.0.27",
 ]
+dev = ["pytest"]
 
-# Make the cu121 index actually take effect: with explicit=true an index is
-# only used for packages pinned to it via tool.uv.sources.
+[project.urls]
+Homepage = "https://github.com/zzzzswh/gathervis"
+Source = "https://github.com/zzzzswh/gathervis"
+Issues = "https://github.com/zzzzswh/gathervis/issues"
+
+[project.scripts]
+gathervis = "gathervis.__main__:main"
+
+# Local development only: pins the cu121 wheel when you `uv sync --extra examples`.
+# This has no effect on anyone installing gathervis from PyPI -- tool.uv.sources
+# is only honoured for the workspace root.
 [tool.uv.sources]
 torch = { index = "pytorch-cu121" }
 
@@ -28,13 +63,6 @@ torch = { index = "pytorch-cu121" }
 name = "pytorch-cu121"
 url = "https://download.pytorch.org/whl/cu121"
 explicit = true
-
-[project.scripts]
-gathervis = "gathervis.__main__:main"
-
-[project.optional-dependencies]
-segy = ["segyio"]
-dev = ["pytest"]
 
 [tool.setuptools.packages.find]
 include = ["gathervis*"]

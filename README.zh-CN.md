@@ -2,7 +2,7 @@
 
 # gathervis
 
-[English](README.md) | **简体中文**
+[English](https://github.com/zzzzswh/gathervis/blob/main/README.md) | **简体中文**
 
 **面向 Python / GPU 服务器的地震道集 Web 查看器。**
 
@@ -12,8 +12,8 @@
 ![license](https://img.shields.io/badge/license-MIT-green)
 ![tests](https://img.shields.io/badge/tests-58%20passing-brightgreen)
 
-<img src="docs/images/ui_gather.png" width="820" alt="Shot gathers 页：分析窗、窗内谱（十字线开启）与四个工具块"/>
-<img src="docs/images/ui_slice.png" width="820" alt="Volume slices 页：AGC 增益后的数据体，沿 shot 轴拉伸 8 倍的三维长方体"/>
+<img src="https://raw.githubusercontent.com/zzzzswh/gathervis/main/docs/images/ui_gather.png" width="820" alt="Shot gathers 页：分析窗、窗内谱（十字线开启）与四个工具块"/>
+<img src="https://raw.githubusercontent.com/zzzzswh/gathervis/main/docs/images/ui_slice.png" width="820" alt="Volume slices 页：AGC 增益后的数据体，沿 shot 轴拉伸 8 倍的三维长方体"/>
 
 *二维道集 QC 与三维体切片，同一个浏览器页面。*
 
@@ -92,7 +92,7 @@ gathervis vel.npy --axes x y depth --dt 10 --cmap rainbow
 
 **Geometry** 页显示采集布设；点任意炮点即选中该炮并跳回其道集，激活炮的排列同步高亮：
 
-<img src="docs/images/ui_geometry.png" width="820" alt="Geometry 页：五条二维测线，金色星标为激活炮，其排列以蓝色高亮"/>
+<img src="https://raw.githubusercontent.com/zzzzswh/gathervis/main/docs/images/ui_geometry.png" width="820" alt="Geometry 页：五条二维测线，金色星标为激活炮，其排列以蓝色高亮"/>
 
 ### 操作速查
 
@@ -119,7 +119,7 @@ gathervis vel.npy --axes x y depth --dt 10 --cmap rainbow
 重塑长方体——页首第二张图就是沿 shot 轴拉伸 8 倍、经同一条滤波/增益链做过
 AGC 的测线。
 
-<img src="docs/images/velocity_qc.png" width="440" alt="depth 轴速度模型 QC"/>
+<img src="https://raw.githubusercontent.com/zzzzswh/gathervis/main/docs/images/velocity_qc.png" width="440" alt="depth 轴速度模型 QC"/>
 
 上图是同一套正演背后的三维速度模型，以 `axes=('x','y','depth')` 查看——
 属性体自动使用深度标注与最小/最大值式色标范围。
@@ -131,7 +131,7 @@ AGC 的测线。
 `seismic`、`gray`、`petrel`（锚点取自 cigvis）、`rainbow`，各配 `_r` 反转变体。
 clip percentile 滑条设定色标范围——同时兼作 wiggle 增益。
 
-<img src="docs/images/display_modes.png" width="620" alt="变密度 vs wiggle"/>
+<img src="https://raw.githubusercontent.com/zzzzswh/gathervis/main/docs/images/display_modes.png" width="620" alt="变密度 vs wiggle"/>
 
 ### 零相位梯形滤波与增益
 
@@ -142,7 +142,7 @@ memmap 懒加载不受影响。Volume-slices 页跟随同一条链：512 MB 以�
 处理一次（链条变化时），三个切片严格一致；更大的 memmap 回退为原始数据并显示
 提示。若传入 CuPy 数组，全部处理透明地在 GPU 上运行。
 
-<img src="docs/images/filters.png" width="620" alt="带通滤波压制含噪道集"/>
+<img src="https://raw.githubusercontent.com/zzzzswh/gathervis/main/docs/images/filters.png" width="620" alt="带通滤波压制含噪道集"/>
 
 ### 画窗 → 谱 → 导出
 
@@ -152,7 +152,7 @@ memmap 懒加载不受影响。Volume-slices 页跟随同一条链：512 MB 以�
 同相轴落在正 k）。换炮、改滤波、改增益后全部自动重算。窗定义可**导出 / 导入
 JSON**。信号窗 vs 噪声窗的对比十秒钟搞定。
 
-<img src="docs/images/windows_spectra.png" width="720" alt="分析窗及其谱"/>
+<img src="https://raw.githubusercontent.com/zzzzswh/gathervis/main/docs/images/windows_spectra.png" width="720" alt="分析窗及其谱"/>
 
 ### 同相轴拾取
 
@@ -199,7 +199,7 @@ JSON**。信号窗 vs 噪声窗的对比十秒钟搞定。
 **M2**（剩余）：联动对比面板 · 客户端体缓存（cigvis 级切片拖动手感）
 （AGC / 道均衡 / CuPy：已完成）。**M3**（剩余）：道头索引、按任意键抽道集
 （SEG-Y 导入：已完成）。**M4**（剩余）：共偏移距/时间切片、NMO 预览
-（同相轴拾取：已完成）。完整规划见 [`docs/plan.md`](docs/plan.md)。
+（同相轴拾取：已完成）。完整规划见 [`docs/plan.md`](https://github.com/zzzzswh/gathervis/blob/main/docs/plan.md)。
 *以及任何你提出的需求——见页首。*
 
 ## 致谢

@@ -16,6 +16,8 @@ power users can also compose their own dashboards with pn.Row / pn.Column.
 """
 from __future__ import annotations
 
+import itertools
+
 import numpy as np
 import panel as pn
 from bokeh.models import (BoxEditTool, ColumnDataSource, CrosshairTool,
@@ -36,10 +38,20 @@ MAX_WIGGLE = (96, 1500)  # wiggle budget: (traces drawn, samples per trace)
 _ext_done = False
 
 
+_PLOT_CSS = """
+.gv-plot:fullscreen {
+  background: var(--panel-surface-color, #ffffff);
+  padding: 10px 14px;
+  box-sizing: border-box;
+}
+.gv-plot:fullscreen .bk-Figure { height: 100% !important; }
+"""
+
+
 def _ensure_ext():
     global _ext_done
     if not _ext_done:
-        pn.extension("plotly", design="material")
+        pn.extension("plotly", design="material", raw_css=[_PLOT_CSS])
         _ext_done = True
 
 
@@ -168,6 +180,20 @@ def _gesture_help():
     return btn, body
 
 
+def _card_style(sidebar):
+    """Geometry for a tool card, depending on where it is hosted.
+
+    Below the figure the cards are fixed 240 px tiles flowing in a FlexBox.
+    In the sidebar they become full-width stacked sections, and start
+    collapsed so the sidebar stays scannable -- the display controls above
+    them are the ones reached on every shot.
+    """
+    if sidebar:
+        return dict(sizing_mode="stretch_width", margin=(3, 0),
+                    collapsed=True)
+    return dict(width=240, margin=(6, 6), collapsed=False)
+
+
 def _labeled(widget, caption):
     """A widget with a small gray caption above it (labels bare FileInputs)."""
     cap = pn.pane.HTML(f"<div style='font-size:11px;color:#5f6368;"
@@ -199,6 +225,58 @@ def _add_crosshair(fig):
 # ---------------------------------------------------------------------------
 # ImagePane: the 2-D rendering primitive (variable density or wiggle)
 # ---------------------------------------------------------------------------
+_PLOT_UID = itertools.count()
+
+# Chrome above/below the plot inside the tab: shot slider, size row, axis
+# labels, readout. Measured rather than guessed would be nicer, but the
+# figure has no stable wrapper to measure before it is laid out.
+_FIT_CHROME_PX = 215
+
+_FIT_JS = """
+const h = Math.round(window.innerHeight - chrome);
+sl.value = Math.min(sl.end, Math.max(sl.start, h));
+"""
+
+# Panel renders some components into shadow roots, so a plain
+# document.querySelector can miss the container; walk shadow roots too.
+_FULLSCREEN_JS = """
+function deepFind(root, cls) {
+  const hit = root.querySelector('.' + cls);
+  if (hit) return hit;
+  for (const e of root.querySelectorAll('*')) {
+    if (e.shadowRoot) {
+      const r = deepFind(e.shadowRoot, cls);
+      if (r) return r;
+    }
+  }
+  return null;
+}
+if (document.fullscreenElement) {
+  document.exitFullscreen();
+} else {
+  const el = deepFind(document, cls);
+  if (!el) {
+    console.warn('gathervis: fullscreen container .' + cls + ' not found');
+  } else {
+    if (!el._gvFsHooked) {
+      el._gvFsHooked = true;
+      document.addEventListener('fullscreenchange', () => {
+        if (document.fullscreenElement === el) {
+          el._gvPrev = sl.value;
+          sl.value = Math.min(sl.end, Math.max(sl.start,
+                              window.screen.height - 110));
+        } else if (el._gvPrev !== undefined) {
+          sl.value = el._gvPrev;
+        }
+      });
+    }
+    el.requestFullscreen().catch(
+      (e) => console.warn('gathervis: fullscreen refused: ' + e));
+  }
+}
+"""
+
+
 class ImagePane:
     """A 2-D (space, time) panel with two display modes on one bokeh figure:
 
@@ -246,6 +324,39 @@ class ImagePane:
             args=dict(div=self.readout), code='div.text = "&nbsp;";'))
         _add_crosshair(fig)
         self.figure = fig
+
+        # -- size controls ------------------------------------------------
+        # A unique class per pane so fullscreen targets this plot, not the
+        # first one on the page (a workspace can hold several).
+        self._cls = f"gv-plot-{next(_PLOT_UID)}"
+        self.w_height = pn.widgets.IntSlider(
+            name="height", start=240, end=2400, step=20, value=height,
+            width=180, margin=(2, 10, 2, 8))
+        self.w_height.param.watch(
+            lambda e: setattr(self.figure, "height", int(e.new)), "value")
+        self.w_fit = pn.widgets.Button(
+            name="⤢ fit", width=72, button_type="light", margin=(18, 3),
+            description="grow the panel to fill the browser window")
+        self.w_fullscreen = pn.widgets.Button(
+            name="⛶ fullscreen", width=112, button_type="light",
+            margin=(18, 3),
+            description="fullscreen this panel (ESC to leave)")
+        self.js_fit = self.w_fit.js_on_click(
+            args=dict(sl=self.w_height, chrome=_FIT_CHROME_PX), code=_FIT_JS)
+        self.js_fullscreen = self.w_fullscreen.js_on_click(
+            args=dict(sl=self.w_height, cls=self._cls), code=_FULLSCREEN_JS)
+
+    def size_controls(self):
+        """Compact height slider + fit + fullscreen row."""
+        return pn.Row(self.w_height, self.w_fit, self.w_fullscreen,
+                      margin=0)
+
+    def frame(self, *extra, controls=True):
+        """The plot, its readout and ``extra``, in the fullscreen container."""
+        items = [self.size_controls()] if controls else []
+        items += [self.figure, self.readout, *extra]
+        return pn.Column(*items, css_classes=["gv-plot", self._cls],
+                         sizing_mode="stretch_width")
 
     def set_cmap(self, name: str):
         self.mapper.palette = _palette(name)   # density mode only
@@ -324,6 +435,7 @@ class WindowTool:
 
     def __init__(self, pane: ImagePane):
         self.pane = pane
+        self._cards = {}          # (name, sidebar) -> pn.Card, built once
         fig = pane.figure
         self.cds_rect = ColumnDataSource(dict(x=[], y=[], width=[], height=[],
                                               color=[]))
@@ -574,26 +686,33 @@ class WindowTool:
             payload["dt"] = float(self.pane._last[5])
         return io.StringIO(json.dumps(payload, indent=2))
 
-    def window_card(self):
+    def window_card(self, sidebar=False):
         """Analysis-window I/O (drawing happens via the toolbar tools)."""
-        hint = pn.pane.HTML(
-            "<div style='font-size:11px;color:#5f6368;margin:0 0 2px 4px'>"
-            "box tool: SHIFT+drag &middot; polygon tool:<br>"
-            "click vertices, ESC ends &middot; BACKSPACE deletes</div>",
-            margin=(0, 5))
-        return pn.Card(hint, self.w_clear, self.w_export,
-                       _labeled(self.w_import, "import windows (.json)"),
-                       title="Window", collapsed=False,
-                       width=240, margin=(6, 6))
+        key = ("window", sidebar)
+        if key not in self._cards:
+            hint = pn.pane.HTML(
+                "<div style='font-size:11px;color:#5f6368;margin:0 0 2px 4px'>"
+                "box tool: SHIFT+drag &middot; polygon tool:<br>"
+                "click vertices, ESC ends &middot; BACKSPACE deletes</div>",
+                margin=(0, 5))
+            self._cards[key] = pn.Card(
+                hint, self.w_clear, self.w_export,
+                _labeled(self.w_import, "import windows (.json)"),
+                title="Window", **_card_style(sidebar))
+        return self._cards[key]
 
-    def spectrum_card(self):
+    def spectrum_card(self, sidebar=False):
         """Spectrum computations on the drawn windows."""
-        return pn.Card(self.w_btn, self.w_fk, self.w_size,
-                       title="Spectrum", collapsed=False,
-                       width=240, margin=(6, 6))
+        key = ("spectrum", sidebar)
+        if key not in self._cards:
+            self._cards[key] = pn.Card(
+                self.w_btn, self.w_fk, self.w_size,
+                title="Spectrum", **_card_style(sidebar))
+        return self._cards[key]
 
-    def controls(self):
-        return pn.FlexBox(self.window_card(), self.spectrum_card())
+    def controls(self, sidebar=False):
+        return pn.FlexBox(self.window_card(sidebar),
+                          self.spectrum_card(sidebar))
 
     def figures(self):
         """The spectrum / f-k panels (full width, shown after computing)."""
@@ -620,6 +739,7 @@ class PickTool:
 
     def __init__(self, pane: ImagePane):
         self.pane = pane
+        self._cards = {}          # (name, sidebar) -> pn.Card, built once
         self.cds = ColumnDataSource(dict(x=[], y=[]))
         self._cds_line = ColumnDataSource(dict(x=[], y=[]))
         pane.figure.line("x", "y", source=self._cds_line, line_width=1.2,
@@ -796,29 +916,35 @@ class PickTool:
         xs, ys = store.get(self._shot, ([], []))
         self.cds.data = dict(x=list(xs), y=list(ys))
 
-    def picking_card(self):
+    def picking_card(self, sidebar=False):
         """Manual event picking: snap refinement + pick I/O."""
-        hint = pn.pane.HTML(
-            "<div style='font-size:11px;color:#5f6368;margin:0 0 2px 4px'>"
-            "point toolbar tool: tap adds, drag moves,<br>"
-            "tap-select + BACKSPACE deletes one</div>",
-            margin=(0, 5))
-        return pn.Card(hint, self.w_snap,
-                       pn.Row(self.w_clear, self.w_clear_all),
-                       self.w_export,
-                       _labeled(self.w_import, "import picks (.csv)"),
-                       title="Event picking", collapsed=False,
-                       width=240, margin=(6, 6))
+        key = ("picking", sidebar)
+        if key not in self._cards:
+            hint = pn.pane.HTML(
+                "<div style='font-size:11px;color:#5f6368;margin:0 0 2px 4px'>"
+                "point toolbar tool: tap adds, drag moves,<br>"
+                "tap-select + BACKSPACE deletes one</div>",
+                margin=(0, 5))
+            self._cards[key] = pn.Card(
+                hint, self.w_snap,
+                pn.Row(self.w_clear, self.w_clear_all),
+                self.w_export,
+                _labeled(self.w_import, "import picks (.csv)"),
+                title="Event picking", **_card_style(sidebar))
+        return self._cards[key]
 
-    def fb_card(self):
+    def fb_card(self, sidebar=False):
         """Automatic first-break picking (gapped STA/LTA)."""
-        return pn.Card(self.w_auto, pn.Row(self.w_sta, self.w_lta),
-                       pn.Row(self.w_thr, self.w_clear_fb),
-                       title="FB picking", collapsed=False,
-                       width=240, margin=(6, 6))
+        key = ("fb", sidebar)
+        if key not in self._cards:
+            self._cards[key] = pn.Card(
+                self.w_auto, pn.Row(self.w_sta, self.w_lta),
+                pn.Row(self.w_thr, self.w_clear_fb),
+                title="FB picking", **_card_style(sidebar))
+        return self._cards[key]
 
-    def controls(self):
-        return pn.FlexBox(self.picking_card(), self.fb_card())
+    def controls(self, sidebar=False):
+        return pn.FlexBox(self.picking_card(sidebar), self.fb_card(sidebar))
 
     def panel(self):
         return self.controls()
@@ -1095,10 +1221,13 @@ class ShotBrowser:
     Workspace so all views stay consistent.
     """
 
-    def __init__(self, g: Gathers, state: dict, cmap="seismic"):
+    def __init__(self, g: Gathers, state: dict, cmap="seismic",
+                 tools="sidebar"):
         _ensure_ext()
         self.g, self.state = g, state
         self._per_shot_3d = g.data.ndim == 4
+        self._tools_sidebar = tools == "sidebar"
+        self._help = None
         self.wt = None
         if self._per_shot_3d:
             self.sv = VolumeView3D(g.shot(0), names=g.axes[1:3], dt=g.dt,
@@ -1147,19 +1276,38 @@ class ShotBrowser:
         if self.on_shot_change is not None:
             self.on_shot_change(self.ishot)
 
+    def tool_cards(self):
+        """Window / Spectrum / picking cards, for hosting in the sidebar.
+
+        Empty for 4-D data, which browses each shot as a 3-D cuboid and has
+        no 2-D panel to draw windows or picks on.
+        """
+        if self.wt is None:
+            return []
+        if self._help is None:
+            self._help = _gesture_help()
+        btn, body = self._help
+        return [self.wt.window_card(True), self.wt.spectrum_card(True),
+                self.pt.picking_card(True), self.pt.fb_card(True), btn, body]
+
     def panel(self):
         if self._per_shot_3d:
             body = self.sv.panel()
+        elif self._tools_sidebar:
+            # cards live in the sidebar; only the figure and the spectra
+            # it produces stay in the main column
+            body = self.pane.frame(self.wt.figures())
         else:
-            help_btn, help_body = _gesture_help()
-            body = pn.Column(self.pane.figure, self.pane.readout,
-                             self.wt.figures(),
-                             pn.FlexBox(self.wt.window_card(),
-                                        self.wt.spectrum_card(),
-                                        self.pt.picking_card(),
-                                        self.pt.fb_card(), help_btn),
-                             help_body,
-                             sizing_mode="stretch_width")
+            if self._help is None:
+                self._help = _gesture_help()
+            help_btn, help_body = self._help
+            body = self.pane.frame(
+                self.wt.figures(),
+                pn.FlexBox(self.wt.window_card(),
+                           self.wt.spectrum_card(),
+                           self.pt.picking_card(),
+                           self.pt.fb_card(), help_btn),
+                help_body)
         return pn.Column(pn.Row(self.w_shot, self.w_jump),
                          body, sizing_mode="stretch_width")
 
@@ -1244,9 +1392,13 @@ class Workspace:
     layout map selects that shot and jumps to the shot-gather tab.
     """
 
-    def __init__(self, g: Gathers, cmap="seismic", perc=98.0, view=None):
+    def __init__(self, g: Gathers, cmap="seismic", perc=98.0, view=None,
+                 tools="sidebar"):
         _ensure_ext()
         self.g = g
+        self._tools_sidebar = tools == "sidebar"
+        self._tool_cards = []          # cards hosted in the sidebar
+        self._tool_tabs = set()        # tab indices those cards apply to
         symmetric = g.axes[-1] != "depth"   # property volumes: min/max-style
         self.state = {"sample": g.sample(), "clim": None,
                       "symmetric": symmetric, "perc": perc}
@@ -1258,12 +1410,17 @@ class Workspace:
 
         # -- tab 1: shot browsing -----------------------------------------
         if "shot" in g.axes:
-            self.browser = ShotBrowser(g, self.state, cmap=cmap)
+            self.browser = ShotBrowser(g, self.state, cmap=cmap, tools=tools)
             self._panes += self.browser.panes
             self._redraws.append(self.browser.redraw)
             label = "Shot gathers" + (" (3-D)" if g.data.ndim == 4 else "")
             self._shot_tab = len(tabs)
             tabs.append((label, self.browser.panel()))
+            if self._tools_sidebar:
+                cards = self.browser.tool_cards()
+                if cards:
+                    self._tool_cards = cards
+                    self._tool_tabs.add(self._shot_tab)
 
         # -- tab 2: geometry (acquisition layout) --------------------------
         if g.geometry is not None:
@@ -1294,20 +1451,42 @@ class Workspace:
             self._pt2d = PickTool(self._pane2d)
             self._draw2d()
             help_btn, help_body = _gesture_help()
-            tabs.append(("Gather", pn.Column(
-                self._pane2d.figure, self._pane2d.readout,
-                self._wt2d.figures(),
-                pn.FlexBox(self._wt2d.window_card(),
-                           self._wt2d.spectrum_card(),
-                           self._pt2d.picking_card(),
-                           self._pt2d.fb_card(), help_btn),
-                help_body, sizing_mode="stretch_width")))
+            if self._tools_sidebar:
+                tabs.append(("Gather",
+                             self._pane2d.frame(self._wt2d.figures())))
+                self._tool_cards = [self._wt2d.window_card(True),
+                                    self._wt2d.spectrum_card(True),
+                                    self._pt2d.picking_card(True),
+                                    self._pt2d.fb_card(True),
+                                    help_btn, help_body]
+                self._tool_tabs.add(len(tabs) - 1)
+            else:
+                tabs.append(("Gather", self._pane2d.frame(
+                    self._wt2d.figures(),
+                    pn.FlexBox(self._wt2d.window_card(),
+                               self._wt2d.spectrum_card(),
+                               self._pt2d.picking_card(),
+                               self._pt2d.fb_card(), help_btn),
+                    help_body)))
 
         self.tabs = pn.Tabs(*tabs, sizing_mode="stretch_width")
         if view == "slices":
             for i, (label, _) in enumerate(tabs):
                 if label == "Volume slices":
                     self.tabs.active = i
+
+        # The tool cards belong to the 2-D gather panel, so they are hidden
+        # on the Geometry / Volume-slices tabs. Toggling one container (not
+        # each card) keeps every card's collapsed state and the gesture
+        # cheat-sheet's own visibility intact across tab switches.
+        self._tools_box = None
+        if self._tool_cards:
+            self._tools_box = pn.Column(*self._tool_cards,
+                                        sizing_mode="stretch_width",
+                                        visible=self.tabs.active in self._tool_tabs)
+            self.tabs.param.watch(
+                lambda e: setattr(self._tools_box, "visible",
+                                  e.new in self._tool_tabs), "active")
         self._controls = self._make_controls(cmap, perc)
 
     def _pick_shot(self, i: int):
@@ -1447,11 +1626,15 @@ class Workspace:
         return [self._w_ftype, self._row_lo, self._row_hi]
 
     def sidebar(self):
-        return [pn.pane.Markdown(_info_md(self.g)), *self._controls]
+        items = [pn.pane.Markdown(_info_md(self.g)), *self._controls]
+        if self._tools_box is not None:
+            items += [pn.layout.Divider(margin=(12, 0, 4, 0)),
+                      self._tools_box]
+        return items
 
     def panel(self):
         """Plain layout (notebook-friendly)."""
-        return pn.Row(pn.Column(*self.sidebar(), width=280),
+        return pn.Row(pn.Column(*self.sidebar(), width=300),
                       self.tabs, sizing_mode="stretch_width")
 
     def template(self, title="gathervis"):
@@ -1461,7 +1644,7 @@ class Workspace:
             title=f"{title} — {name}" if name else title,
             sidebar=self.sidebar(), main=[self.tabs],
             accent_base_color="#1a5276", header_background="#1a5276",
-            sidebar_width=300)
+            sidebar_width=320)
 
 
 # ---------------------------------------------------------------------------
@@ -1516,7 +1699,8 @@ def _banner(port):
 
 def show(obj, axes=None, view=None, dt=1.0, t0=0.0, src=None, rec=None,
          shape=None, dtype="float32", name=None, cmap="seismic", perc=98.0,
-         port=None, address="127.0.0.1", title="gathervis", verbose=True):
+         port=None, address="127.0.0.1", title="gathervis", verbose=True,
+         tools="sidebar"):
     """Open a viewer for ``obj``.
 
     Parameters
@@ -1535,11 +1719,18 @@ def show(obj, axes=None, view=None, dt=1.0, t0=0.0, src=None, rec=None,
         on a remote server). If the port is busy a free one is picked
         automatically; ``port=0`` always auto-picks. If None, return the
         Panel app (notebook-friendly).
+    tools : {'sidebar', 'below'}
+        Where the Window / Spectrum / Event-picking / FB-picking cards go.
+        'sidebar' (default) stacks them, collapsed, under the display
+        controls so the gather keeps the full main column. 'below' restores
+        the old row of cards under the figure.
     """
     import time
     t_start = time.perf_counter()
     if view not in (None, "browse", "slices"):
         raise ValueError("view must be None, 'browse' or 'slices'")
+    if tools not in ("sidebar", "below"):
+        raise ValueError("tools must be 'sidebar' or 'below'")
     if isinstance(obj, (str, bytes)) or hasattr(obj, "__fspath__"):
         if shape is None:
             raise ValueError("shape= is required when opening a raw binary file")
@@ -1552,7 +1743,7 @@ def show(obj, axes=None, view=None, dt=1.0, t0=0.0, src=None, rec=None,
         obj.name = name
     t_data = time.perf_counter()
 
-    ws = Workspace(obj, cmap=cmap, perc=perc, view=view)
+    ws = Workspace(obj, cmap=cmap, perc=perc, view=view, tools=tools)
     t_app = time.perf_counter()
     if verbose:
         print(f"[gathervis] dataset {tuple(obj.shape)} ready in "

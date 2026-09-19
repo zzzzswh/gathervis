@@ -1,28 +1,47 @@
 Metadata-Version: 2.4
 Name: gathervis
-Version: 0.14.1
-Summary: Web-based pre-stack seismic gather viewer: lazy on 100 GB memmaps, cigvis-style 3-D slicing, geometry-linked shot browsing, filters and windowed spectra. SSH-friendly.
-License: MIT
+Version: 0.14.4
+Summary: Web-based seismic shot-gather viewer for remote GPU servers: lazy loading of huge files, SEG-Y import, cigvis-style 3-D volume slicing, geometry-linked browsing, filters/AGC, windowed spectra and f-k, first-break picking.
+Author: zzzzswh
+License-Expression: MIT
+Project-URL: Homepage, https://github.com/zzzzswh/gathervis
+Project-URL: Source, https://github.com/zzzzswh/gathervis
+Project-URL: Issues, https://github.com/zzzzswh/gathervis/issues
+Keywords: seismic,geophysics,shot-gather,segy,visualization,viewer,fwi,pre-stack,seismology
+Classifier: Development Status :: 4 - Beta
+Classifier: Intended Audience :: Science/Research
+Classifier: Topic :: Scientific/Engineering :: Physics
+Classifier: Topic :: Scientific/Engineering :: Visualization
+Classifier: Operating System :: OS Independent
+Classifier: Programming Language :: Python :: 3
+Classifier: Programming Language :: Python :: 3.9
+Classifier: Programming Language :: Python :: 3.10
+Classifier: Programming Language :: Python :: 3.11
+Classifier: Programming Language :: Python :: 3.12
+Classifier: Programming Language :: Python :: 3.13
 Requires-Python: >=3.9
 Description-Content-Type: text/markdown
+License-File: LICENSE
 Requires-Dist: numpy>=1.22
 Requires-Dist: panel>=1.3
 Requires-Dist: bokeh>=3.3
 Requires-Dist: plotly>=5.15
-Requires-Dist: torch<2.11,>=2.4.0
-Requires-Dist: deepwave>=0.0.27
 Provides-Extra: segy
 Requires-Dist: segyio; extra == "segy"
+Provides-Extra: examples
+Requires-Dist: torch<2.11,>=2.4.0; extra == "examples"
+Requires-Dist: deepwave>=0.0.27; extra == "examples"
 Provides-Extra: dev
 Requires-Dist: pytest; extra == "dev"
+Dynamic: license-file
 
 <div align="center">
 
 # gathervis
 
-**English** | [简体中文](README.zh-CN.md)
+**English** | [简体中文](https://github.com/zzzzswh/gathervis/blob/main/README.zh-CN.md)
 
-**A web-based pre-stack seismic gather viewer for the Python / GPU-server era.**
+**A web-based seismic gather viewer for Python / GPU servers.**
 
 *Point it at a 100 GB file on a remote server. It opens in your browser in one second.*
 
@@ -30,42 +49,37 @@ Requires-Dist: pytest; extra == "dev"
 ![license](https://img.shields.io/badge/license-MIT-green)
 ![tests](https://img.shields.io/badge/tests-58%20passing-brightgreen)
 
-<img src="docs/images/ui_slice.png" width="820" alt="gathervis in the browser: AGC-gained volume as a stretched 3-D cuboid with slice planes"/>
+<img src="https://raw.githubusercontent.com/zzzzswh/gathervis/main/docs/images/ui_gather.png" width="820" alt="Shot gathers tab: analysis window, its spectrum with the crosshair on, and the four tool blocks"/>
+<img src="https://raw.githubusercontent.com/zzzzswh/gathervis/main/docs/images/ui_slice.png" width="820" alt="Volume slices tab: AGC-gained volume as a cuboid stretched 8x along the shot axis"/>
+
+*2-D gather QC and 3-D volume slicing, in one browser tab.*
 
 </div>
 
-> **💬 Feature requests welcome!** This tool is built feature-by-feature from
-> real workflows. If there is anything you wish it did — a display mode, a
-> processing step, a file format — **please open an issue and tell me. I will
-> implement it.** Thank you very much!
+> **💬 Feature requests welcome!** If there is anything you wish it did — a
+> display mode, a processing step, a file format — **please open an issue and
+> tell me. I will implement it.** Thank you very much!
 >
-> **💬 欢迎提需求！** 这个工具是从真实工作流里一个功能一个功能长出来的。
-> 如果你希望它能做什么 —— 显示方式、处理步骤、文件格式 ——
+> **💬 欢迎提需求！** 如果你希望它能做什么 —— 显示方式、处理步骤、文件格式 ——
 > **请务必开 issue 告诉我，我会实现的，非常感谢！**
 
 ---
 
 ## Why gathervis?
 
-You just ran a wave-equation simulation on a GPU server, or copied field data
-onto it. Now you want to *look* at the gathers. Your options were: matplotlib
-PNGs in a loop, dragging gigabytes to your laptop, or fighting X11. gathervis
-is the missing fourth option:
-
 * **Instant on huge data.** Files open as lazy memmaps — browsing a shot reads
   only that shot's bytes; slicing a volume reads only that slice. A 100 GB raw
   binary opens as fast as a 1 MB one.
 * **Just a browser.** Serves over one port. VS Code Remote-SSH auto-forwards
-  it; Jupyter renders it inline; a bare `ssh -L` also works. No X11, no VNC,
-  no copying data.
+  it; Jupyter renders it inline; a bare `ssh -L` also works.
 * **Geometry-aware.** Give it source/receiver coordinates and you get an
   acquisition-layout tab — tap any source point to jump to its shot gather.
 * **cigvis-style 3-D.** Volumes render as a rotatable cuboid with three live
-  slice planes (WebGL), with per-axis stretch and a camera that stays put.
+  slice planes (WebGL).
 * **QC tools built in.** Wiggle & variable-density display, industry
   colormaps, zero-phase Ormsby filters, and draw-a-window spectral analysis.
-* **Simple by design.** ~1000 lines of package code, two rendering
-  primitives, one wire format (decimate → uint8). Keep it simple, stupid.
+* **Simple.** ~1000 lines of package code, two rendering primitives, one
+  wire format (decimate → uint8).
 
 ## Install
 
@@ -74,7 +88,7 @@ pip install -e .            # numpy + panel + bokeh + plotly
 pip install deepwave        # optional, for the modelling examples (pulls torch)
 ```
 
-## 60-second tour
+## Quick start
 
 ```python
 import gathervis as gv
@@ -101,7 +115,8 @@ gathervis field.sgy                                # SEG-Y: dt + geometry from h
 gathervis vel.npy --axes x y depth --dt 10 --cmap rainbow
 ```
 
-No data yet? `python examples/quickstart.py` serves an analytic synthetic;
+Examples with synthetic data: `python examples/quickstart.py` serves an
+analytic synthetic;
 `python examples/deepwave_line2d.py` models a 2-D line with
 [deepwave](https://github.com/ar4/deepwave); and
 `python examples/deepwave_lines3d.py` shoots **five 2-D lines over a rich 3-D
@@ -112,19 +127,35 @@ with deepwave's 3-D engine, then opens the result.
 
 ### Browse shots, linked to the acquisition geometry
 
-The **Shot gathers** tab flips through shots live while you drag (or type a
-shot number to jump). Draw analysis windows right on the gather, compute
-their spectra (crosshair + a live frequency/dB readout for comparing peaks),
-pick events manually or with the STA/LTA auto-picker — the tool blocks under
-the panel (*Window · Spectrum · Event picking · FB picking*) each keep their
-own tidy controls, with a *? gestures* cheat-sheet one click away:
-
-<img src="docs/images/ui_gather.png" width="820" alt="Shot gathers tab: window drawn on the gather, its spectrum below with the crosshair on"/>
+The **Shot gathers** tab (first screenshot above) flips through shots live
+while you drag, or jumps straight to a number typed into *go to shot*. Draw
+analysis windows right on the gather, compute their spectra (crosshair +
+a live frequency/dB readout for comparing peaks), pick events manually or
+with the STA/LTA auto-picker — the tool blocks under the panel
+(*Window · Spectrum · Event picking · FB picking*) each keep their own
+controls.
 
 The **Geometry** tab shows the acquisition layout; tapping a source selects
 that shot and jumps back to its gather, with the active spread highlighted:
 
-<img src="docs/images/ui_geometry.png" width="820" alt="Geometry tab: five 2-D lines, active shot starred with its spread highlighted"/>
+<img src="https://raw.githubusercontent.com/zzzzswh/gathervis/main/docs/images/ui_geometry.png" width="820" alt="Geometry tab: five 2-D lines, active shot starred with its spread highlighted"/>
+
+### Gestures & controls
+
+| To do this | Do this |
+| --- | --- |
+| Draw a box window | select the box toolbar tool → **SHIFT+drag** (or click, move, click) |
+| Draw a polygon window | select the polygon tool → click each vertex, **double-click or ESC** to finish |
+| Move / delete a window | drag it; tap to select, then **BACKSPACE** (or *clear windows*) |
+| Add / move / delete picks | point toolbar tool → tap adds, drag moves, tap + **BACKSPACE** deletes (or *clear shot* / *clear all*) |
+| Auto first breaks | set STA / LTA / threshold → *auto pick*; refine with *snap* (peak / trough / \|max\|) or by dragging |
+| Compare spectrum peaks | crosshair toolbar icon + the freq / dB readout under the panel |
+| Scale one axis | the x-only / y-only wheel-zoom toolbar tools |
+| Reshape the 3-D cuboid | one *stretch* slider per axis (1.0 centered, 0.125×–8×) |
+| Jump to a shot | drag the slider, type in *go to shot*, or tap a source on the Geometry tab |
+| Resize the spectrum panel | *size* (S / M / L) in the Spectrum block |
+
+The same cheat-sheet lives in-app behind the *? gestures* button.
 
 ### Slice volumes as a 3-D cuboid (cigvis-style)
 
@@ -133,10 +164,10 @@ as a wireframe cuboid with three axis-aligned slice planes. Drag the sliders
 to move planes (each step ships only that one decimated slice), rotate/zoom
 freely (your camera survives every update), and reshape the cuboid with
 per-axis stretch sliders (0.125×–8×, geometric steps, 1.0 centered) — the
-screenshot at the top shows a line stretched 8× along the shot axis with AGC
-applied through the same filter/gain chain as the gather views.
+second screenshot at the top shows a line stretched 8× along the shot axis
+with AGC applied through the same filter/gain chain as the gather views.
 
-<img src="docs/images/velocity_qc.png" width="440" alt="velocity model QC with depth axis"/>
+<img src="https://raw.githubusercontent.com/zzzzswh/gathervis/main/docs/images/velocity_qc.png" width="440" alt="velocity model QC with depth axis"/>
 
 The screenshot at the top shows a modelled line as a `(shot, rec, time)`
 cube; above is the 3-D velocity model behind such data, viewed with
@@ -152,7 +183,7 @@ Colormaps: `seismic`, `gray`, `petrel` (anchors from cigvis), `rainbow`,
 each with a `_r` reversed variant. The clip-percentile slider sets the color
 limits — and doubles as wiggle gain.
 
-<img src="docs/images/display_modes.png" width="620" alt="variable density vs wiggle"/>
+<img src="https://raw.githubusercontent.com/zzzzswh/gathervis/main/docs/images/display_modes.png" width="620" alt="variable density vs wiggle"/>
 
 ### Zero-phase trapezoid filters
 
@@ -161,7 +192,7 @@ gather views: linear ramps over `f1–f2` (low cut) and `f3–f4` (high cut),
 exactly zero-phase, applied per displayed gather so memmap laziness is
 preserved. Edit a corner frequency and the panel re-filters instantly.
 
-<img src="docs/images/filters.png" width="620" alt="band-pass filtering a noisy gather"/>
+<img src="https://raw.githubusercontent.com/zzzzswh/gathervis/main/docs/images/filters.png" width="620" alt="band-pass filtering a noisy gather"/>
 
 ### Draw windows → spectra → export
 
@@ -172,7 +203,7 @@ window, recomputed automatically when you change shot or filter. *Export
 windows* downloads the definitions as JSON (trace/time coordinates + dt) for
 reuse elsewhere. Signal window vs. noise window comparisons take ten seconds.
 
-<img src="docs/images/windows_spectra.png" width="720" alt="analysis windows and their spectra"/>
+<img src="https://raw.githubusercontent.com/zzzzswh/gathervis/main/docs/images/windows_spectra.png" width="720" alt="analysis windows and their spectra"/>
 
 ## Remote usage (pick one)
 
@@ -217,7 +248,7 @@ declare other semantics explicitly with `axes=`. `axes` says what the array
 cigvis-grade slice scrubbing (AGC / trace balance / CuPy: done). **M3** (remaining): header indexing, gather extraction by any key
 (SEG-Y import: done). **M4** (remaining):
 common-offset/time slicing, NMO preview (event picking: done). Full plan:
-[`docs/plan.md`](docs/plan.md). *And whatever you ask for — see the note at
+[`docs/plan.md`](https://github.com/zzzzswh/gathervis/blob/main/docs/plan.md). *And whatever you ask for — see the note at
 the top.*
 
 ## Acknowledgements

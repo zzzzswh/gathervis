@@ -2,7 +2,7 @@
 
 # gathervis
 
-**English** | [简体中文](README.zh-CN.md)
+**English** | [简体中文](https://github.com/zzzzswh/gathervis/blob/main/README.zh-CN.md)
 
 **A web-based seismic gather viewer for Python / GPU servers.**
 
@@ -12,8 +12,8 @@
 ![license](https://img.shields.io/badge/license-MIT-green)
 ![tests](https://img.shields.io/badge/tests-58%20passing-brightgreen)
 
-<img src="docs/images/ui_gather.png" width="820" alt="Shot gathers tab: analysis window, its spectrum with the crosshair on, and the four tool blocks"/>
-<img src="docs/images/ui_slice.png" width="820" alt="Volume slices tab: AGC-gained volume as a cuboid stretched 8x along the shot axis"/>
+<img src="https://raw.githubusercontent.com/zzzzswh/gathervis/main/docs/images/ui_gather.png" width="820" alt="Shot gathers tab: analysis window, its spectrum with the crosshair on, and the four tool blocks"/>
+<img src="https://raw.githubusercontent.com/zzzzswh/gathervis/main/docs/images/ui_slice.png" width="820" alt="Volume slices tab: AGC-gained volume as a cuboid stretched 8x along the shot axis"/>
 
 *2-D gather QC and 3-D volume slicing, in one browser tab.*
 
@@ -101,7 +101,7 @@ controls.
 The **Geometry** tab shows the acquisition layout; tapping a source selects
 that shot and jumps back to its gather, with the active spread highlighted:
 
-<img src="docs/images/ui_geometry.png" width="820" alt="Geometry tab: five 2-D lines, active shot starred with its spread highlighted"/>
+<img src="https://raw.githubusercontent.com/zzzzswh/gathervis/main/docs/images/ui_geometry.png" width="820" alt="Geometry tab: five 2-D lines, active shot starred with its spread highlighted"/>
 
 ### Gestures & controls
 
@@ -130,7 +130,7 @@ per-axis stretch sliders (0.125×–8×, geometric steps, 1.0 centered) — the
 second screenshot at the top shows a line stretched 8× along the shot axis
 with AGC applied through the same filter/gain chain as the gather views.
 
-<img src="docs/images/velocity_qc.png" width="440" alt="velocity model QC with depth axis"/>
+<img src="https://raw.githubusercontent.com/zzzzswh/gathervis/main/docs/images/velocity_qc.png" width="440" alt="velocity model QC with depth axis"/>
 
 The screenshot at the top shows a modelled line as a `(shot, rec, time)`
 cube; above is the 3-D velocity model behind such data, viewed with
@@ -146,7 +146,7 @@ Colormaps: `seismic`, `gray`, `petrel` (anchors from cigvis), `rainbow`,
 each with a `_r` reversed variant. The clip-percentile slider sets the color
 limits — and doubles as wiggle gain.
 
-<img src="docs/images/display_modes.png" width="620" alt="variable density vs wiggle"/>
+<img src="https://raw.githubusercontent.com/zzzzswh/gathervis/main/docs/images/display_modes.png" width="620" alt="variable density vs wiggle"/>
 
 ### Zero-phase trapezoid filters
 
@@ -155,7 +155,7 @@ gather views: linear ramps over `f1–f2` (low cut) and `f3–f4` (high cut),
 exactly zero-phase, applied per displayed gather so memmap laziness is
 preserved. Edit a corner frequency and the panel re-filters instantly.
 
-<img src="docs/images/filters.png" width="620" alt="band-pass filtering a noisy gather"/>
+<img src="https://raw.githubusercontent.com/zzzzswh/gathervis/main/docs/images/filters.png" width="620" alt="band-pass filtering a noisy gather"/>
 
 ### Draw windows → spectra → export
 
@@ -166,7 +166,7 @@ window, recomputed automatically when you change shot or filter. *Export
 windows* downloads the definitions as JSON (trace/time coordinates + dt) for
 reuse elsewhere. Signal window vs. noise window comparisons take ten seconds.
 
-<img src="docs/images/windows_spectra.png" width="720" alt="analysis windows and their spectra"/>
+<img src="https://raw.githubusercontent.com/zzzzswh/gathervis/main/docs/images/windows_spectra.png" width="720" alt="analysis windows and their spectra"/>
 
 ## Remote usage (pick one)
 
@@ -211,7 +211,7 @@ declare other semantics explicitly with `axes=`. `axes` says what the array
 cigvis-grade slice scrubbing (AGC / trace balance / CuPy: done). **M3** (remaining): header indexing, gather extraction by any key
 (SEG-Y import: done). **M4** (remaining):
 common-offset/time slicing, NMO preview (event picking: done). Full plan:
-[`docs/plan.md`](docs/plan.md). *And whatever you ask for — see the note at
+[`docs/plan.md`](https://github.com/zzzzswh/gathervis/blob/main/docs/plan.md). *And whatever you ask for — see the note at
 the top.*
 
 ## Acknowledgements

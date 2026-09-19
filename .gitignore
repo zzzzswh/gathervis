@@ -5,3 +5,10 @@ docs/plan
 
 *.npz
 *.npy
+
+# build artifacts
+*.egg-info/
+build/
+dist/
+
+*.patch

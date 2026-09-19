@@ -775,23 +775,26 @@ def test_fb_clear_button(line):
 
 
 # ---------------- v0.13.3: gesture cheat-sheet ----------------
-def test_gesture_help_toggle(line):
+def _find(obj, cls, out=None):
+    out = [] if out is None else out
+    if isinstance(obj, cls):
+        out.append(obj)
+    for c in getattr(obj, "objects", []):
+        _find(c, cls, out)
+    return out
+
+
+@pytest.mark.parametrize("tools", ["sidebar", "below"])
+def test_gesture_help_toggle(line, tools):
     from gathervis.viewer import Workspace
-    ws = Workspace(line)
-    body = ws.browser.panel()
+    ws = Workspace(line, tools=tools)
+    # the help button follows the cards: sidebar by default, else under the plot
+    body = pn.Column(*ws.sidebar()) if tools == "sidebar" else ws.browser.panel()
 
-    def find(obj, cls, out):
-        if isinstance(obj, cls):
-            out.append(obj)
-        for c in getattr(obj, "objects", []):
-            find(c, cls, out)
-        return out
-
-    import panel as pn
-    btns = [b for b in find(body, pn.widgets.Button, [])
+    btns = [b for b in _find(body, pn.widgets.Button)
             if b.name == "? gestures"]
     assert len(btns) == 1
-    helps = [h for h in find(body, pn.pane.HTML, [])
+    helps = [h for h in _find(body, pn.pane.HTML)
              if "Toolbar gestures" in str(h.object)]
     assert len(helps) == 1 and helps[0].visible is False
     btns[0].clicks += 1                    # toggle open
@@ -804,14 +807,15 @@ def test_gesture_help_toggle(line):
 
 # ---------------- v0.13.4: spectrum position + size ----------------
 def test_spectrum_position_and_size(line):
-    import panel as pn
-    b = ShotBrowser(line, _state(line))
+    b = ShotBrowser(line, _state(line), tools="below")
     body = b.panel()
     col = body[1]                          # figure column of the 2-D branch
     kinds = [type(o).__name__ for o in col.objects]
-    # order: gather figure, readout, spectra column, cards FlexBox, help
-    assert kinds[2] == "Column" and kinds[3] == "FlexBox"
-    wrapped = [getattr(o, "object", None) for o in col.objects[2].objects]
+    # size controls, gather figure, readout, spectra column, cards, help
+    assert kinds[:3] == ["Row", "Bokeh", "Bokeh"]
+    assert "FlexBox" in kinds              # cards still under the figure
+    spec_col = col.objects[kinds.index("Column")]
+    wrapped = [getattr(o, "object", None) for o in spec_col.objects]
     assert b.wt.spec_fig in wrapped        # spectra column holds the figure
     # default M size: smaller + width-capped
     assert b.wt.spec_fig.height == 240 and b.wt.spec_fig.max_width == 900
@@ -819,6 +823,129 @@ def test_spectrum_position_and_size(line):
     assert b.wt.spec_fig.height == 180 and b.wt.fk_fig.max_width == 650
     b.wt.w_size.value = "L"
     assert b.wt.spec_fig.height == 320 and b.wt.spec_fig.max_width is None
+
+
+# ---------------- tool cards in the sidebar ----------------
+_CARD_TITLES = {"Window", "Spectrum", "Event picking", "FB picking"}
+
+
+def _card_titles(obj):
+    return {c.title for c in _find(obj, pn.Card)} & _CARD_TITLES
+
+
+def test_tool_cards_default_to_sidebar(line):
+    ws = Workspace(line)
+    assert _card_titles(pn.Column(*ws.sidebar())) == _CARD_TITLES
+    # and no longer under the figure
+    assert _card_titles(ws.browser.panel()) == set()
+
+
+def test_tool_cards_below_is_still_available(line):
+    ws = Workspace(line, tools="below")
+    assert _card_titles(ws.browser.panel()) == _CARD_TITLES
+    assert _card_titles(pn.Column(*ws.sidebar())) == set()
+
+
+def test_sidebar_cards_start_collapsed_and_stretch(line):
+    ws = Workspace(line)
+    cards = [c for c in _find(pn.Column(*ws.sidebar()), pn.Card)
+             if c.title in _CARD_TITLES]
+    assert all(c.collapsed for c in cards)
+    assert all(c.sizing_mode == "stretch_width" for c in cards)
+
+
+def test_sidebar_cards_hidden_on_non_gather_tabs(line):
+    ws = Workspace(line)                   # shot gathers + Geometry tabs
+    other = [i for i in range(len(ws.tabs)) if i not in ws._tool_tabs]
+    assert other, "need a tab the cards do not apply to"
+    assert ws._tools_box.visible is True    # starts on the shot-gather tab
+    ws.tabs.active = other[0]
+    assert ws._tools_box.visible is False
+    ws.tabs.active = ws._shot_tab
+    assert ws._tools_box.visible is True
+
+
+def test_tab_switch_preserves_card_state(line):
+    """Visibility is toggled on the container, so a card the user opened is
+    still open when they come back from another tab."""
+    ws = Workspace(line)
+    card = [c for c in _find(pn.Column(*ws.sidebar()), pn.Card)
+            if c.title == "FB picking"][0]
+    card.collapsed = False
+    other = [i for i in range(len(ws.tabs)) if i not in ws._tool_tabs][0]
+    ws.tabs.active = other
+    ws.tabs.active = ws._shot_tab
+    assert card.collapsed is False
+
+
+def test_sidebar_cards_are_shared_not_duplicated(line):
+    """sidebar() is called by both panel() and template(); widgets must not
+    be rebuilt, or the two copies would drift apart."""
+    ws = Workspace(line)
+    assert ws.sidebar()[-1] is ws.sidebar()[-1]
+    a = [c for c in _find(pn.Column(*ws.sidebar()), pn.Card)
+         if c.title == "FB picking"][0]
+    bcard = [c for c in _find(pn.Column(*ws.sidebar()), pn.Card)
+             if c.title == "FB picking"][0]
+    assert a is bcard
+
+
+def test_tools_argument_is_validated(line):
+    with pytest.raises(ValueError, match="tools must be"):
+        gv.show(np.zeros((4, 8, 16), "f4"), tools="left")
+
+
+# ---------------- panel sizing: height / fit / fullscreen ----------------
+def test_height_slider_drives_the_figure(line):
+    b = ShotBrowser(line, _state(line))
+    assert b.pane.figure.height == b.pane.w_height.value
+    b.pane.w_height.value = 900
+    assert b.pane.figure.height == 900
+    b.pane.w_height.value = 300
+    assert b.pane.figure.height == 300
+
+
+def test_size_controls_are_above_the_figure(line):
+    b = ShotBrowser(line, _state(line))
+    col = b.panel()[1]
+    row = col.objects[0]
+    assert isinstance(row, pn.Row)
+    assert [b.pane.w_height, b.pane.w_fit, b.pane.w_fullscreen] \
+        == list(row.objects)
+
+
+def test_frame_carries_the_fullscreen_classes(line):
+    b = ShotBrowser(line, _state(line))
+    col = b.panel()[1]
+    assert "gv-plot" in col.css_classes         # styled by _PLOT_CSS
+    assert b.pane._cls in col.css_classes       # unique fullscreen target
+
+
+def test_each_pane_gets_a_distinct_fullscreen_target(line):
+    """Two panes on one page must not fullscreen each other."""
+    from gathervis.viewer import ImagePane
+    a, b = ImagePane(), ImagePane()
+    assert a._cls != b._cls
+
+
+def test_fit_and_fullscreen_have_js_bound(line):
+    b = ShotBrowser(line, _state(line))
+    for cb in (b.pane.js_fit, b.pane.js_fullscreen):
+        # both drive the same slider, so Python state stays in sync
+        assert cb.args["sl"] is b.pane.w_height
+    fs = b.pane.js_fullscreen
+    assert fs.args["cls"] == b.pane._cls
+    code = "".join(fs.code.values())
+    assert "requestFullscreen" in code and "exitFullscreen" in code
+    assert "shadowRoot" in code            # Panel may render into shadow DOM
+
+
+def test_fit_clamps_to_the_slider_range(line):
+    """The JS writes through the slider, so its bounds are the clamp."""
+    b = ShotBrowser(line, _state(line))
+    code = "".join(b.pane.js_fit.code.values())
+    assert "Math.min(sl.end" in code and "Math.max(sl.start" in code
+    assert b.pane.js_fit.args["chrome"] > 0
 
 
 # ---------------- v0.13.5: polarity flip ----------------
