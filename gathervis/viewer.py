@@ -20,9 +20,10 @@ import itertools
 
 import numpy as np
 import panel as pn
+from bokeh.events import DocumentReady
 from bokeh.models import (BoxEditTool, ColumnDataSource, CrosshairTool,
                           CustomJS, Div, LinearColorMapper, PointDrawTool,
-                          PolyDrawTool, TapTool)
+                          PolyDrawTool, TapTool, TextInput)
 from bokeh.plotting import figure
 
 from .core import Gathers, from_array, from_file
@@ -194,13 +195,20 @@ finish &middot; drag to move &middot; tap + BACKSPACE deletes<br>
 <b>Pick</b> &mdash; tap to add &middot; drag to move &middot; tap + BACKSPACE
 deletes one (or use the clear buttons)<br>
 <b>Axes</b> &mdash; the x/y wheel-zoom tools scale one axis at a time &middot;
-the crosshair icon toggles cursor lines
+the crosshair icon toggles cursor lines{keys}
 </div>"""
 
+# the only keyboard shortcut, so it is only worth a line where there are
+# shots to step through
+_KEYS_HTML = """<br>
+<b>Keys</b> &mdash; <kbd>&larr;</kbd>/<kbd>&rarr;</kbd> previous / next shot
+<span style='color:#5f6368'>(off while you are typing in a field)</span>"""
 
-def _gesture_help():
+
+def _gesture_help(shots=True):
     """A small '?' button toggling an inline gesture cheat-sheet."""
-    body = pn.pane.HTML(_GESTURES_HTML, visible=False,
+    html = _GESTURES_HTML.format(keys=_KEYS_HTML if shots else "")
+    body = pn.pane.HTML(html, visible=False,
                         sizing_mode="stretch_width", margin=(4, 0))
     btn = pn.widgets.Button(
         name="? gestures", **_W,
@@ -354,6 +362,58 @@ if (document.fullscreenElement) {
   }
 }
 """
+
+
+# ---------------------------------------------------------------------------
+# Keyboard shortcut: step through shots
+# ---------------------------------------------------------------------------
+# One shortcut only -- LEFT / RIGHT to flip shots, the single thing done
+# over and over while reading a line. Everything else (colormap, clip,
+# polarity, gain, fullscreen, tabs) is set once and stays with its widget:
+# a key claimed is a key swallowed, and swallowing keys nobody presses only
+# costs the user their browser's own shortcuts.
+#
+# The listener sits on ``document``: a bokeh canvas never takes focus, so
+# anything attached to the plot itself would only fire after the user first
+# clicked something. Three details make that safe:
+#
+#   * ``composedPath()[0]`` instead of ``e.target`` -- Panel renders widgets
+#     into shadow roots, where the retargeted ``e.target`` is the *host*
+#     element, so an arrow key walking the caret along "go to shot" would
+#     otherwise flip the shot underneath as well;
+#   * only the two arrow keys are swallowed, leaving SHIFT / ESC /
+#     BACKSPACE (and every browser shortcut) to bokeh's own edit tools;
+#   * held-down keys are throttled to ~8/s, so leaning on the arrow key
+#     cannot queue up a hundred server-side redraws.
+#
+# The press reaches Python through a hidden bokeh TextInput: writing its
+# value in JS syncs to the server like any other model property. A Panel
+# ReactiveHTML component would read better, but it makes the browser
+# resolve a custom data model, and if that resolution fails the *whole*
+# document fails to load -- a blank page instead of a dead shortcut. Plain
+# models only, so a broken key binding can never cost more than the keys.
+_KEYS_JS = """
+if (window._gvOnKey) { document.removeEventListener('keydown', window._gvOnKey); }
+window._gvSeq = window._gvSeq || 0;
+window._gvOnKey = function (e) {
+  if (e.ctrlKey || e.metaKey || e.altKey) { return; }
+  const t = (e.composedPath ? e.composedPath()[0] : e.target) || e.target;
+  const tag = (t && t.tagName) ? t.tagName.toUpperCase() : '';
+  if (tag === 'INPUT' || tag === 'TEXTAREA' || tag === 'SELECT' ||
+      (t && t.isContentEditable)) { return; }
+  if (keys.indexOf(e.key) < 0) { return; }
+  e.preventDefault();
+  const now = (window.performance || Date).now();
+  if (e.repeat && now - (window._gvKeyAt || 0) < 120) { return; }
+  window._gvKeyAt = now;
+  chan.value = e.key + '|' + (++window._gvSeq);
+};
+document.addEventListener('keydown', window._gvOnKey);
+"""
+
+
+# the whole shortcut surface: one shot forward, one shot back
+_SHOT_STEPS = {"ArrowRight": 1, "ArrowLeft": -1}
 
 
 class ImagePane:
@@ -1582,9 +1642,10 @@ class Workspace:
     """
 
     def __init__(self, g: Gathers, cmap="seismic", perc=98.0, view=None,
-                 tools="sidebar"):
+                 tools="sidebar", keys=True):
         _ensure_ext()
         self.g = g
+        self._synced = False
         self._tools_sidebar = tools == "sidebar"
         self._tool_cards = []          # cards hosted in the sidebar
         self._tool_tabs = set()        # tab indices those cards apply to
@@ -1640,7 +1701,8 @@ class Workspace:
             self._pt2d = PickTool(self._pane2d)
             self._pane2d.w_download.filename = f"{_slug(g.name)}.png"
             self._draw2d()
-            help_btn, help_body = _gesture_help()
+            self._help = _gesture_help(shots=False)   # single gather: no keys
+            help_btn, help_body = self._help
             if self._tools_sidebar:
                 tabs.append(("Gather",
                              self._pane2d.frame(self._wt2d.figures())))
@@ -1678,6 +1740,98 @@ class Workspace:
                 lambda e: setattr(self._tools_box, "visible",
                                   e.new in self._tool_tabs), "active")
         self._controls = self._make_controls(cmap, perc)
+        self._key_docs = set()
+        self._keychan = self._keys_js = None
+        if keys:
+            self._make_key_binder()
+
+    # -- keyboard ----------------------------------------------------------
+    def _make_key_binder(self):
+        """Bind LEFT / RIGHT, and only where there are shots to step through.
+
+        A layout without a shot browser -- a single gather, a volume -- gets
+        no listener at all rather than one that swallows the arrow keys and
+        does nothing with them.
+        """
+        if getattr(self, "browser", None) is None:
+            return
+        keys = list(_SHOT_STEPS)
+        # the channel carries "<key>|<counter>" so that pressing the same key
+        # twice is still two distinct property changes
+        self._keychan = TextInput(value="", visible=False)
+        self._keychan.on_change("value", lambda a, o, n: self._on_key(n))
+        self._keys_js = CustomJS(args=dict(chan=self._keychan, keys=keys),
+                                 code=_KEYS_JS)
+
+    def bind_keys(self):
+        """Install the key listener in the session's document.
+
+        DocumentReady rather than render time: the listener is global to the
+        page, so it belongs to the document, and attaching it here keeps it
+        out of the notebook case, where it would fight the notebook's own
+        shortcuts.
+        """
+        doc = pn.state.curdoc
+        if self._keys_js is None or doc is None or doc in self._key_docs:
+            return
+        self._key_docs.add(doc)
+        doc.js_on_event(DocumentReady, self._keys_js)
+
+    def _on_key(self, value):
+        key = value.rsplit("|", 1)[0]            # drop the repeat counter
+        br = getattr(self, "browser", None)
+        if br is not None and key in _SHOT_STEPS:
+            br.set_shot(br.ishot + _SHOT_STEPS[key])   # set_shot clamps
+
+    # -- URL state ---------------------------------------------------------
+    def sync_location(self):
+        """Mirror the view state into the page URL (``?shot=37&cmap=gray``).
+
+        Two-way: a URL carrying these parameters restores the view on load,
+        and every later change rewrites the query string -- so the address
+        bar is always a link a colleague can open on the same dataset, and
+        the browser's back button undoes the last change.
+
+        Only meaningful in a served session; in a notebook ``pn.state.location``
+        is the notebook's own URL, which we must not touch.
+        """
+        loc = pn.state.location
+        if loc is None or self._synced:
+            return
+        self._synced = True
+        pairs = [(self._w_disp, "display"), (self._w_flip, "flip"),
+                 (self._w_cmap, "cmap"), (self._w_perc, "clip"),
+                 (self._w_gain, "gain"), (self._w_agcwin, "agcwin"),
+                 (self._w_ftype, "filter")]
+        pairs += [(w, f"f{i + 1}") for i, w in enumerate(self._w_f)]
+        if getattr(self, "browser", None) is not None:
+            pairs.append((self.browser.w_shot, "shot"))
+        pairs.append((self.tabs, "tab"))
+
+        # A hand-edited or stale link can carry a value this build cannot use
+        # (?cmap=nosuchmap). Panel applies it first and only then finds out,
+        # which would leave the widget saying one thing and the panel showing
+        # another, so put the old value back -- that re-runs the watchers and
+        # the view is consistent again.
+        def _guard(w, pname, qname, good):
+            def _on_error(failed):
+                print(f"[gathervis] URL: ignoring unusable {qname}="
+                      f"{failed.get(pname)!r}")
+                try:
+                    setattr(w, pname, good)
+                except Exception:
+                    pass
+            return _on_error
+
+        for w, qname in pairs:
+            pname = "active" if w is self.tabs else "value"
+            loc.sync(w, {pname: qname},
+                     on_error=_guard(w, pname, qname, getattr(w, pname)))
+        # Everything above applies itself through its own watcher, except the
+        # clip percentile: that one is wired to value_throttled (apply on
+        # mouse release), which a URL-supplied value never fires.
+        if self._w_perc.value != self.state["perc"]:
+            _set_throttled(self._w_perc, self._w_perc.value)
 
     def _pick_shot(self, i: int):
         """Layout-map tap: select the shot and jump to the shot-gather tab."""
@@ -1716,15 +1870,19 @@ class Workspace:
             self.slices.redraw()
 
     def _make_controls(self, cmap, perc):
-        w_disp = pn.widgets.Select(name="display", options=list(_DISPLAYS),
-                                   value="density")
-        w_cmap = pn.widgets.Select(name="colormap", options=list(_CMAPS),
-                                   value=cmap)
-        w_perc = pn.widgets.FloatSlider(name="clip percentile", start=80.0,
-                                        end=100.0, step=0.5, value=perc)
+        # kept on self: the keyboard shortcuts and the URL sync drive these
+        # same widgets rather than a parallel copy of the state
+        self._w_disp = w_disp = pn.widgets.Select(
+            name="display", options=list(_DISPLAYS), value="density")
+        self._w_cmap = w_cmap = pn.widgets.Select(
+            name="colormap", options=list(_CMAPS), value=cmap)
+        self._w_perc = w_perc = pn.widgets.FloatSlider(
+            name="clip percentile", start=80.0, end=100.0, step=0.5,
+            value=perc)
         # negates the displayed gathers: wiggle fill lobes and density
         # colors swap (SEG normal <-> reverse); spectra and picks unaffected
-        w_flip = pn.widgets.Checkbox(name="flip polarity", value=False)
+        self._w_flip = w_flip = pn.widgets.Checkbox(name="flip polarity",
+                                                    value=False)
 
         def _on_flip(event):
             self.state["flip"] = event.new
@@ -1820,6 +1978,8 @@ class Workspace:
         if self._tools_box is not None:
             items += [pn.layout.Divider(margin=(12, 0, 4, 0)),
                       self._tools_box]
+        if self._keychan is not None:
+            items.append(self._keychan)  # invisible; must be in the layout
         return items
 
     def panel(self):
@@ -1890,7 +2050,7 @@ def _banner(port):
 def show(obj, axes=None, view=None, dt=1.0, t0=0.0, src=None, rec=None,
          shape=None, dtype="float32", name=None, cmap="seismic", perc=98.0,
          port=None, address="127.0.0.1", title="gathervis", verbose=True,
-         tools="sidebar"):
+         tools="sidebar", keys=None):
     """Open a viewer for ``obj``.
 
     Parameters
@@ -1914,6 +2074,13 @@ def show(obj, axes=None, view=None, dt=1.0, t0=0.0, src=None, rec=None,
         'sidebar' (default) stacks them, collapsed, under the display
         controls so the gather keeps the full main column. 'below' restores
         the old row of cards under the figure.
+    keys : bool, optional
+        The left/right arrow keys step through shots (the only shortcut,
+        and only where there is a shot axis). Default: on when served, off
+        in a notebook, where a document-level key listener would fight the
+        notebook's own.
+        Served views additionally mirror their state into the URL, so the
+        address bar stays a shareable link to exactly what is on screen.
     """
     import time
     t_start = time.perf_counter()
@@ -1933,7 +2100,8 @@ def show(obj, axes=None, view=None, dt=1.0, t0=0.0, src=None, rec=None,
         obj.name = name
     t_data = time.perf_counter()
 
-    ws = Workspace(obj, cmap=cmap, perc=perc, view=view, tools=tools)
+    ws = Workspace(obj, cmap=cmap, perc=perc, view=view, tools=tools,
+                   keys=(port is not None) if keys is None else keys)
     t_app = time.perf_counter()
     if verbose:
         print(f"[gathervis] dataset {tuple(obj.shape)} ready in "
@@ -1944,5 +2112,15 @@ def show(obj, axes=None, view=None, dt=1.0, t0=0.0, src=None, rec=None,
     port = _resolve_port(port, address)
     if verbose:
         _banner(port)
-    pn.serve(ws.template(title), port=port, address=address, show=False,
+    # Served as a factory, not as a finished object: pn.state.location only
+    # exists inside a session, so the URL binding has to happen here rather
+    # than while the Workspace is being built.
+    tmpl = ws.template(title)
+
+    def _session():
+        ws.bind_keys()
+        ws.sync_location()
+        return tmpl
+
+    pn.serve(_session, port=port, address=address, show=False,
              title=title, websocket_origin="*")

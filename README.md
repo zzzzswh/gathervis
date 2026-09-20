@@ -91,7 +91,8 @@ with deepwave's 3-D engine, then opens the result.
 ### Browse shots, linked to the acquisition geometry
 
 The **Shot gathers** tab (first screenshot above) flips through shots live
-while you drag, or jumps straight to a number typed into *go to shot*. Draw
+while you drag, steps with the **←** / **→** keys, or jumps straight to a
+number typed into *go to shot*. Draw
 analysis windows right on the gather, compute their spectra (crosshair +
 a live frequency/dB readout for comparing peaks), pick events manually or
 with the STA/LTA auto-picker — the tool blocks under the panel
@@ -118,8 +119,13 @@ that shot and jumps back to its gather, with the active spread highlighted:
 | Jump to a shot | drag the slider, type in *go to shot*, or tap a source on the Geometry tab |
 | Resize the spectrum panel | *size* (S / M / L) in the Spectrum block |
 | Save the gather as an image | the **⤓ full image** button (full resolution) · the toolbar *save* icon (current view, screen resolution) |
+| Step through shots | **←** / **→** |
+| Send someone the exact view you are looking at | copy the URL — shot, colormap, clip, polarity, filter and gain all live in the query string |
 
-The same cheat-sheet lives in-app behind the *? gestures* button.
+The same cheat-sheet lives in-app behind the *? gestures* button. The arrow
+keys are the only shortcut — everything else is set once and stays on its
+widget. They are ignored while you are typing in a field, and
+`gv.show(..., keys=False)` turns them off altogether.
 
 ### Slice volumes as a 3-D cuboid (cigvis-style)
 

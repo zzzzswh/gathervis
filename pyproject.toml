@@ -4,7 +4,7 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "gathervis"
-version = "0.15.0"
+version = "0.16.0"
 description = "Web-based seismic shot-gather viewer for remote GPU servers: lazy loading of huge files, SEG-Y import, cigvis-style 3-D volume slicing, geometry-linked browsing, filters/AGC, windowed spectra and f-k, first-break picking."
 readme = "README.md"
 license = "MIT"

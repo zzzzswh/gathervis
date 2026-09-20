@@ -11,7 +11,7 @@ Quickstart::
 """
 from .core import Gathers, Geometry, from_array, from_file, from_segy
 
-__version__ = "0.15.0"
+__version__ = "0.16.0"
 __all__ = ["Gathers", "Geometry", "from_array", "from_file", "from_segy", "show"]
 
 

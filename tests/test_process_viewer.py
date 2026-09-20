@@ -5,6 +5,8 @@ import pytest
 import gathervis as gv
 from gathervis.demo import synthetic_line
 from gathervis.process import decimate, quantize, robust_clim
+from bokeh.models import TextInput
+
 from gathervis.viewer import (LayoutMap, ShotBrowser, VolumeView3D, Workspace,
                               _set_throttled, view_gather)
 
@@ -1429,3 +1431,180 @@ def test_fk_is_the_plain_2d_dft_too(line):
     assert np.isfinite(img).all() and b.wt.fk_fig.visible
     assert img.max() <= 0.01 and img.min() >= -121   # peak-normalized dB
     assert not hasattr(b.wt, "_taper")               # no window function
+
+
+# ---------------- keyboard shortcut ----------------
+def _press(ws, key):
+    """Simulate one key press arriving from the browser."""
+    ws._counter = getattr(ws, "_counter", 0) + 1
+    ws._keychan.value = f"{key}|{ws._counter}"
+
+
+def _claimed(ws):
+    return ws._keys_js.args["keys"]
+
+
+def test_only_the_arrow_keys_are_claimed(line):
+    """Claiming a key means swallowing it, so claim only the one shortcut."""
+    ws = Workspace(line, keys=True)
+    assert sorted(_claimed(ws)) == ["ArrowLeft", "ArrowRight"]
+
+
+def test_a_shotless_view_binds_nothing(line):
+    """No shot axis, no shortcut -- and no listener eating the arrow keys."""
+    flat = Workspace(gv.from_array(np.zeros((8, 40), "f4"), dt=0.002), keys=True)
+    assert flat._keychan is None and flat._keys_js is None
+    assert not any(isinstance(i, TextInput) for i in flat.sidebar())
+    flat.bind_keys()                                     # no-op, no crash
+
+
+def test_the_sheet_only_advertises_the_key_where_it_works(line):
+    """The gesture sheet is shared, the shortcut is not."""
+    ws = Workspace(line, keys=True)
+    assert "next shot" in ws.browser._help[1].object
+
+    flat = Workspace(gv.from_array(np.zeros((8, 40), "f4"), dt=0.002))
+    assert "next shot" not in flat._help[1].object
+    assert "Toolbar gestures" in flat._help[1].object      # the rest stays
+
+
+def test_arrow_keys_step_shots_and_clamp(line):
+    ws = Workspace(line, keys=True)
+    _press(ws, "ArrowRight")
+    assert ws.browser.ishot == 1
+    for _ in range(line.nshot + 3):                      # walk off the end
+        _press(ws, "ArrowRight")
+    assert ws.browser.ishot == line.nshot - 1
+    assert ws.browser.w_jump.value == line.nshot - 1     # mirror widget follows
+    assert ws.map._cds_asrc.data["x"][0] == line.geometry.src[-1, 0]
+    for _ in range(line.nshot + 3):                      # ... and off the start
+        _press(ws, "ArrowLeft")
+    assert ws.browser.ishot == 0
+
+
+def test_the_display_state_is_left_to_the_widgets(line):
+    """w / p / g / [ / ] / f / 1-9 / ? are gone: set-once controls keep
+    their widgets, and the keys stay with the browser."""
+    ws = Workspace(line, keys=True)
+    snap = lambda: (ws._w_disp.value, ws.state.get("flip"),
+                    ws.state.get("gain"), ws.state.get("perc"),
+                    ws.tabs.active)
+    before = snap()
+    for k in ("w", "p", "g", "[", "]", "f", "1", "2", "?", "Home", "End",
+              "shift+ArrowRight", "z", "Escape", "", "Backspace"):
+        _press(ws, k)
+    assert snap() == before
+    assert ws.browser.ishot == 0
+
+
+def test_key_listener_leaves_typing_alone(line):
+    """Panel widgets live in shadow roots, where e.target is the host element:
+    the listener has to look through composedPath or an arrow key in
+    'go to shot' would move the caret and the shot at once."""
+    ws = Workspace(line, keys=True)
+    js = ws._keys_js.code
+    assert "composedPath" in js
+    assert "'INPUT'" in js and "'TEXTAREA'" in js and "isContentEditable" in js
+    assert "e.ctrlKey || e.metaKey || e.altKey" in js    # browser shortcuts
+    assert "e.repeat" in js                              # held keys throttled
+    assert "keys.indexOf(e.key) < 0" in js               # unclaimed keys pass
+    assert "shiftKey" not in js and "clickFullscreen" not in js
+
+
+def test_keys_can_be_switched_off(line):
+    ws = Workspace(line, keys=False)
+    assert ws._keychan is None and ws._keys_js is None
+    assert not any(isinstance(i, TextInput) for i in ws.sidebar())
+    ws.bind_keys()                                       # no-op, no crash
+
+
+def test_key_channel_is_a_plain_bokeh_model(line):
+    """A custom model the browser cannot resolve takes the whole document
+    down with it, so the shortcut rides on stock models only."""
+    ws = Workspace(line, keys=True)
+    assert isinstance(ws._keychan, TextInput) and not ws._keychan.visible
+    assert any(i is ws._keychan for i in ws.sidebar())
+    assert isinstance(ws.panel(), pn.viewable.Viewable)
+    assert not any(type(m).__module__.startswith("panel.")
+                   for m in (ws._keychan, ws._keys_js))
+
+
+def test_keys_bind_to_the_session_document(line):
+    """The listener is page-global, so it hangs off the document, once."""
+    from bokeh.document import Document
+    from bokeh.events import DocumentReady
+    from panel.io.state import set_curdoc
+    ws = Workspace(line, keys=True)
+    doc = Document()
+    with set_curdoc(doc):
+        ws.bind_keys()
+        ws.bind_keys()                                   # idempotent
+    cbs = doc.callbacks.js_event_callbacks.get(DocumentReady.event_name, [])
+    assert [cb for cb in cbs if cb is ws._keys_js] == [ws._keys_js]
+    assert ws._keys_js.args["chan"] is ws._keychan
+
+
+# ---------------- URL state ----------------
+@pytest.fixture
+def session():
+    """A served-session stand-in: pn.state.location only exists inside one."""
+    from bokeh.document import Document
+    from panel.io.state import set_curdoc
+    with set_curdoc(Document()):
+        yield pn.state.location
+
+
+def test_url_restores_the_view(line, session):
+    ws = Workspace(line)
+    session.search = ("?shot=4&cmap=gray&display=wiggle&clip=95.0&flip=True"
+                      "&filter=band-pass&f3=40.0&f4=50.0&gain=AGC&tab=1")
+    ws.sync_location()
+    assert ws.browser.ishot == 4
+    assert ws._w_cmap.value == "gray" and ws._w_disp.value == "wiggle"
+    assert ws.state["perc"] == 95.0          # applied, not just shown
+    assert ws.state["flip"] is True
+    assert ws.state["filter"] == {"f1": 5.0, "f2": 10.0, "f3": 40.0, "f4": 50.0}
+    assert ws.state["gain"][0] == "agc"
+    assert ws.tabs.active == 1
+
+
+def test_changes_write_themselves_back_into_the_url(line, session):
+    ws = Workspace(line)
+    ws.sync_location()
+    ws.browser.set_shot(3)
+    ws._w_cmap.value = "petrel"
+    assert "shot=3" in session.search and "cmap=petrel" in session.search
+    ws.sync_location()                       # idempotent: no double watchers
+    ws.browser.set_shot(2)
+    assert session.search.count("shot=") == 1
+
+
+def test_a_stale_url_cannot_break_the_view(line, session, capsys):
+    ws = Workspace(line)
+    cmap, clim = ws._w_cmap.value, ws.state["clim"]
+    session.search = "?cmap=nosuchmap&clip=abc"
+    ws.sync_location()
+    assert ws._w_cmap.value == cmap          # rolled back, not left dangling
+    assert ws.state["clim"] == clim
+    assert "nosuchmap" in capsys.readouterr().out
+
+
+def test_no_url_sync_outside_a_session(line):
+    """In a notebook pn.state.location is the notebook's own URL."""
+    assert pn.state.location is None
+    ws = Workspace(line)
+    ws.sync_location()
+    assert ws._synced is False
+
+
+def test_keys_add_no_exotic_models(line):
+    """This is the bug that shipped once: a model type the browser cannot
+    resolve does not break the shortcut, it fails the whole document and
+    leaves a blank page. Turning keys on may only add stock bokeh widgets."""
+    from bokeh.document import Document
+
+    def model_types(keys):
+        root = Workspace(line, keys=keys).panel().get_root(Document())
+        return {type(m).__name__ for m in root.references()}
+
+    assert model_types(True) - model_types(False) <= {"TextInput"}

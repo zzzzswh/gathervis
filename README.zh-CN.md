@@ -85,8 +85,8 @@ gathervis vel.npy --axes x y depth --dt 10 --cmap rainbow
 
 ### 逐炮浏览，与观测系统联动
 
-**Shot gathers** 页（页首第一张图）拖动滑条实时翻炮，或在 *go to shot* 输入
-炮号直接跳转。直接在道集上画分析窗、算窗内谱（十字线 + 实时频率/dB 读数方便
+**Shot gathers** 页（页首第一张图）拖动滑条实时翻炮，按 **←** / **→** 逐炮步进，
+或在 *go to shot* 输入炮号直接跳转。直接在道集上画分析窗、算窗内谱（十字线 + 实时频率/dB 读数方便
 比峰）、手动拾取或 STA/LTA 自动拾取初至——面板下方的四个工具块
 （*Window · Spectrum · Event picking · FB picking*）各管各的。
 
@@ -109,8 +109,12 @@ gathervis vel.npy --axes x y depth --dt 10 --cmap rainbow
 | 跳到某一炮 | 拖炮号滑条、*go to shot* 输入，或在 Geometry 页点炮点 |
 | 调谱面板大小 | Spectrum 块里的 *size*（S / M / L） |
 | 存图 | **⤓ full image** 按钮（原分辨率全图）· 工具栏 save 图标（当前视野，屏幕分辨率） |
+| 翻炮 | **←** / **→** |
+| 把眼前这个视图发给别人 | 直接复制地址栏 —— 炮号、色标、clip、极性、滤波、增益都写在 URL 里 |
 
-同一份速查在应用里点 *? gestures* 按钮随时可看。
+同一份速查在应用里点 *? gestures* 按钮随时可看。快捷键只有左右方向键这一个，
+其余都是设一次就不动的控件，留在各自的控件上。光标在输入框里时方向键自动让位，
+整体关掉用 `gv.show(..., keys=False)`。
 
 ### 数据体的三维长方体切片（cigvis 风格）
 
