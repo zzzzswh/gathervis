@@ -1548,7 +1548,13 @@ def test_keys_bind_to_the_session_document(line):
     with set_curdoc(doc):
         ws.bind_keys()
         ws.bind_keys()                                   # idempotent
-    cbs = doc.callbacks.js_event_callbacks.get(DocumentReady.event_name, [])
+    # bokeh made this public in 3.8; older versions only have the private
+    # name. The library does not touch either -- this is test introspection.
+    mgr = doc.callbacks
+    registry = getattr(mgr, "js_event_callbacks", None)
+    if registry is None:
+        registry = mgr._js_event_callbacks
+    cbs = registry.get(DocumentReady.event_name, [])
     assert [cb for cb in cbs if cb is ws._keys_js] == [ws._keys_js]
     assert ws._keys_js.args["chan"] is ws._keychan
 
