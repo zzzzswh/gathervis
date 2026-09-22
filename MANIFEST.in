@@ -1,0 +1,6 @@
+include README.zh-CN.md
+include LICENSE
+recursive-include examples *.py
+
+exclude uv.lock
+prune docs
