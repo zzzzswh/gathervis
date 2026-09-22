@@ -4,13 +4,15 @@
 
 **English** | [简体中文](https://github.com/zzzzswh/gathervis/blob/main/README.zh-CN.md)
 
-**A web-based seismic gather viewer for Python / GPU servers.**
+**A professional web viewer for pre-stack seismic data.**
 
-*Point it at a 100 GB file on a remote server. It opens in your browser in one second.*
+*Open pre-stack data sitting on a remote server in your browser, and work it
+the way you would in processing software: browse shots, filter, take spectra,
+pick.*
 
 ![python](https://img.shields.io/badge/python-3.9%2B-blue)
 ![license](https://img.shields.io/badge/license-MIT-green)
-![tests](https://img.shields.io/badge/tests-58%20passing-brightgreen)
+![tests](https://img.shields.io/badge/tests-147%20passing-brightgreen)
 
 <img src="https://raw.githubusercontent.com/zzzzswh/gathervis/main/docs/images/ui_gather.png" width="820" alt="Shot gathers tab: analysis window, its spectrum with the crosshair on, and the four tool blocks"/>
 <img src="https://raw.githubusercontent.com/zzzzswh/gathervis/main/docs/images/ui_slice.png" width="820" alt="Volume slices tab: AGC-gained volume as a cuboid stretched 8x along the shot axis"/>
@@ -30,25 +32,38 @@
 
 ## Why gathervis?
 
+The reason is a practical one: not wanting to draw pre-stack data with
+matplotlib one figure at a time. Change shot, redraw. Change a filter
+parameter, redraw. Want the spectrum of one time gate and that is another
+block of code. The figures come out fine, but the process is broken up, and
+every look starts over. gathervis turns it into the kind of viewing you get in
+processing software: the data is simply open in a browser, a slider steps
+through shots, drawing a box gives you its spectrum, and changing the filter
+updates the panel as you type.
+
 * **Instant on huge data.** Files open as lazy memmaps — browsing a shot reads
   only that shot's bytes; slicing a volume reads only that slice. A 100 GB raw
   binary opens as fast as a 1 MB one.
-* **Just a browser.** Serves over one port. VS Code Remote-SSH auto-forwards
-  it; Jupyter renders it inline; a bare `ssh -L` also works.
-* **Geometry-aware.** Give it source/receiver coordinates and you get an
-  acquisition-layout tab — tap any source point to jump to its shot gather.
+* **Geometry-linked views.** Give it source/receiver coordinates and you get a
+  Geometry tab and a Fold tab — tap any source point to jump to its shot
+  gather, with the active spread highlighted; CMP fold is computed from
+  coordinates alone.
+* **QC tools built in.** Wiggle & variable-density display with industry
+  colormaps, zero-phase Ormsby filters, AGC / trace balance, draw-a-window
+  spectral analysis (amplitude spectra and f-k), and manual / STA-LTA
+  first-break picking.
 * **cigvis-style 3-D.** Volumes render as a rotatable cuboid with three live
   slice planes (WebGL).
-* **QC tools built in.** Wiggle & variable-density display, industry
-  colormaps, zero-phase Ormsby filters, and draw-a-window spectral analysis.
-* **Simple.** ~1000 lines of package code, two rendering primitives, one
-  wire format (decimate → uint8).
+* **Simple.** All it needs is a browser: one port, auto-forwarded by VS Code
+  Remote-SSH, rendered inline in Jupyter, and reachable over a bare `ssh -L`.
+  Four dependencies, installed with pip.
 
 ## Install
 
 ```bash
 pip install -e .            # numpy + panel + bokeh + plotly
 pip install deepwave        # optional, for the modelling examples (pulls torch)
+pip install segyio          # optional, for SEG-Y import
 ```
 
 ## Quick start
@@ -86,80 +101,74 @@ analytic synthetic;
 velocity model** (dipping layers + anticline dome + low-velocity channel lens)
 with deepwave's 3-D engine, then opens the result.
 
-## Feature tour
+## Features
 
-### Browse shots, linked to the acquisition geometry
+### Shot browsing and geometry
 
-The **Shot gathers** tab (first screenshot above) flips through shots live
-while you drag, steps with the **←** / **→** keys, or jumps straight to a
-number typed into *go to shot*. Draw
-analysis windows right on the gather, compute their spectra (crosshair +
-a live frequency/dB readout for comparing peaks), pick events manually or
-with the STA/LTA auto-picker — the tool blocks under the panel
-(*Window · Spectrum · Event picking · FB picking*) each keep their own
-controls.
+On the **Shot gathers** tab, the shot slider updates the panel while you drag,
+**←** / **→** step one shot at a time, and *go to shot* jumps to a shot number.
+Four tool blocks sit under the panel — *Window · Spectrum · Event picking ·
+FB picking* — holding the controls for analysis windows, spectra, picks and
+first-break parameters respectively.
 
-The **Geometry** tab shows the acquisition layout; tapping a source selects
-that shot and jumps back to its gather, with the active spread highlighted:
+The **Geometry** tab shows the source and receiver layout. Tapping a source
+selects that shot and returns to the Shot gathers tab, with the active spread
+highlighted on the map.
 
 <img src="https://raw.githubusercontent.com/zzzzswh/gathervis/main/docs/images/ui_geometry.png" width="820" alt="Geometry tab: five 2-D lines, active shot starred with its spread highlighted"/>
 
-### Look at a 3-D shot the way a processor does
+### Trace ordering for 3-D shots
 
-A 3-D shot is a patch of receiver lines, not a cube. Processing shops put the
-whole patch on one `(trace, time)` panel and change the *order* the traces are
-laid out in — so that is what the **sort** selector on the Shot gathers tab
-does:
+A 3-D shot is a patch of several receiver lines. Processing practice puts the
+whole patch on one `(trace, time)` panel and changes the order the traces are
+laid out in; the **sort** selector on the Shot gathers tab provides four
+orderings.
 
 <img src="https://raw.githubusercontent.com/zzzzswh/gathervis/main/docs/images/sorts.png" width="820" alt="the same 3-D shot sorted as recorded, by offset and by azimuth"/>
 
-*The same shot three ways: as recorded (receiver-line breaks in orange), by
-offset, by azimuth.*
+*The same shot in three orderings: as recorded (receiver-line breaks dashed in
+orange), by offset, by azimuth.*
 
-| sort | what it is for |
+| sort | description |
 | --- | --- |
-| **as recorded** `(line, station)` | Acquisition order, receiver lines end to end: N nested hyperbolas whose apices step with cross-line distance. Geometry errors, reversed lines, polarity flips and dead channels all jump out of this one. Dashed separators mark the line boundaries. |
-| **receiver line** | One line at a time — a plain 2-D shot record — for detailed work on a line that looked wrong in the patch. |
-| **offset** | Every trace by source-receiver distance: the whole patch collapses onto one hyperbola, for moveout, mute design and velocity. |
-| **azimuth** | By source-to-receiver azimuth (survey convention, north = 0), for azimuthal behaviour and for seeing how the patch covers azimuth at all. |
+| **as recorded** `(line, station)` | Acquisition order, receiver lines end to end, displayed as N nested hyperbolas whose apices step with cross-line distance. Used to check geometry errors, reversed lines, polarity flips and dead channels. Dashed separators mark the line boundaries. |
+| **receiver line** | One receiver line at a time, i.e. a 2-D shot record. |
+| **offset** | Ordered by source-receiver distance; the patch collapses onto one hyperbola. Used for moveout, mute design and velocity analysis. |
+| **azimuth** | Ordered by source-to-receiver azimuth (survey convention, north = 0). Used for azimuthal behaviour and azimuth coverage. |
 
-Because every arrangement is the same 2-D panel, the analysis windows,
-spectra, picking and full-image export work on 3-D shots exactly as they do
-on 2-D ones. Picks are stored against the **trace**, not the screen column,
-so they follow a re-sort — and picks on traces that a single-line view leaves
-out are hidden rather than discarded, and come back when you go back.
+All four orderings are the same 2-D panel, so analysis windows, spectra,
+picking and full-resolution export work identically on them. Picks are stored
+against the **trace** rather than the screen column, so they follow a re-sort;
+picks on traces outside a single-line view are hidden rather than deleted and
+return when the view does.
 
-`offset` and `azimuth` need geometry; `receiver line` needs 4-D
-`(shot, recy, recx, time)` data, where the line structure is explicit. The
-selector offers only what the dataset can actually do, and hides itself for a
-2-D line with no geometry. The **Shot volume** tab shows the current shot as a
-cuboid as well, on the same filter/gain chain — a second opinion, not the way
-in.
+`offset` and `azimuth` require geometry; `receiver line` requires 4-D
+`(shot, recy, recx, time)` data, the shape in which the line structure is
+explicit. The selector lists only the orderings the dataset supports, and is
+hidden for a 2-D line with no geometry. The **Shot volume** tab renders the
+current shot as a cuboid on the same filter/gain chain.
 
-Try it: `python examples/quickstart.py patch`.
+Example: `python examples/quickstart.py patch`.
 
-### Acquisition QC: the CMP fold map
+### CMP fold map
 
-The **Fold** tab bins every source-receiver midpoint and counts them: a hole
-in the fold map is a hole in the image, and it is visible here long before
-anything has been processed.
+The **Fold** tab bins the midpoint of every source-receiver pair on a
+rectangular grid and counts them.
 
 <img src="https://raw.githubusercontent.com/zzzzswh/gathervis/main/docs/images/fold.png" width="520" alt="CMP fold map of an orthogonal land 3-D, full fold in the middle tapering to the edges"/>
 
-*Fold of an orthogonal land 3-D (25 m stations on 200 m receiver lines, 50 m
-shot points on 200 m shot lines). A fixed full spread, so fold peaks in the
-middle and tapers off the edges.*
+*Fold of an orthogonal land 3-D: 25 m stations on 200 m receiver lines, 50 m
+shot points on 200 m shot lines, fixed full spread.*
 
 Bin size defaults to half the receiver station interval in-line and half the
-line interval cross-line -- the natural CMP sampling -- and both are editable,
-so you can see straight away what a coarser bin buys you in fold and costs you
-in resolution. Empty bins draw as background rather than as the bottom of the
-colour scale, so the live area's own shape reads directly. The summary line
-gives grid size, live bins, max and mean fold, and the trace total (which must
-equal `sources x receivers`, and is worth a glance as a geometry checksum).
+line interval cross-line, the natural CMP sampling; both are editable on the
+tab, and *default bin* restores them. Empty bins are drawn in the background
+colour rather than at the bottom of the colour scale. The summary line gives
+grid size, live bins, maximum and mean fold, and the trace total — which
+should equal `sources × receivers` and serves as a geometry check.
 
-It is computed from **coordinates only**, so it costs the same on a 100 GB
-survey as on a toy one, and works on a bare `Geometry` with no traces at all:
+The computation uses coordinates only and reads no trace data, so its cost is
+independent of data volume and it works on a bare `Geometry`:
 
 ```python
 from gathervis.survey import fold, default_bin
@@ -168,8 +177,18 @@ grid.counts                                  # (ny, nx) traces per bin
 grid.nlive, grid.extent, grid.bin_of(x, y)
 ```
 
-Tapping a bin selects it -- that is the hook the offset-azimuth rose diagram
-hangs off (next on the roadmap).
+Tapping a bin selects and outlines it. The offset-azimuth distribution of a
+bin is available from the same module; the in-app rose diagram is not yet
+implemented:
+
+```python
+from gathervis.survey import offsets_azimuths_in_bin, azimuth_sectors
+offs, azis, shots = offsets_azimuths_in_bin(ds.geometry, grid, ix, iy)
+edges, counts = azimuth_sectors(azis, nsector=24)   # survey convention, N = 0
+```
+
+The number of non-empty sectors returned by `azimuth_sectors` is the bin's
+azimuth coverage.
 
 ### Gestures & controls
 
@@ -181,6 +200,9 @@ hangs off (next on the roadmap).
 | Add / move / delete picks | point toolbar tool → tap adds, drag moves, tap + **BACKSPACE** deletes (or *clear shot* / *clear all*) |
 | Auto first breaks | set STA / LTA / threshold → *auto pick*; refine with *snap* (peak / trough / \|max\|) or by dragging |
 | Compare spectrum peaks | crosshair toolbar icon + the freq / dB readout under the panel |
+| Compute an f-k spectrum | *f-k spectrum* in the Spectrum block, applied to the first window |
+| Reuse a set of windows | *export JSON* / *import windows (.json)* in the Window block |
+| Take picks out and back | *export CSV* / import in the picking block, `shot,trace,time_s` |
 | Scale one axis | the x-only / y-only wheel-zoom toolbar tools |
 | Re-sort a 3-D shot | the *sort* selector (as recorded / receiver line / offset / azimuth) |
 | Re-bin the fold map | *bin x* / *bin y* on the Fold tab (*default bin* restores) |
@@ -191,91 +213,123 @@ hangs off (next on the roadmap).
 | Resize the spectrum panel | *size* (S / M / L) in the Spectrum block |
 | Save the gather as an image | the **⤓ full image** button (full resolution) · the toolbar *save* icon (current view, screen resolution) |
 | Step through shots | **←** / **→** |
-| Send someone the exact view you are looking at | copy the URL — shot, sort, colormap, clip, polarity, filter and gain all live in the query string |
+| Share the current view | copy the URL: active tab, shot, sort, receiver line, colormap, clip, polarity, filter and gain (incl. AGC window) are all in the query string |
 
-The same cheat-sheet lives in-app behind the *? gestures* button. The arrow
-keys are the only shortcut — everything else is set once and stays on its
-widget. They are ignored while you are typing in a field, and
-`gv.show(..., keys=False)` turns them off altogether.
+The same table is available in-app behind the *? gestures* button. The arrow
+keys are the only shortcut; every other control is set once and stays on its
+widget. Arrow keys are ignored while typing in a field, and
+`gv.show(..., keys=False)` disables them.
 
-### Slice volumes as a 3-D cuboid (cigvis-style)
+### 3-D volume slices
 
 Any 3-D array — a whole line, one 3-D shot gather, a velocity model — renders
-as a wireframe cuboid with three axis-aligned slice planes. Drag the sliders
-to move planes (each step ships only that one decimated slice), rotate/zoom
-freely (your camera survives every update), and reshape the cuboid with
-per-axis stretch sliders (0.125×–8×, geometric steps, 1.0 centered) — the
-second screenshot at the top shows a line stretched 8× along the shot axis
-with AGC applied through the same filter/gain chain as the gather views.
+as a wireframe cuboid with three axis-aligned slice planes. Sliders move the
+planes, each step shipping only that decimated slice; the camera survives
+subsequent updates after rotating or zooming; and one stretch slider per axis
+(0.125×–8×, geometric steps, 1.0 centered) reshapes the cuboid. The second
+screenshot at the top is a line stretched 8× along the shot axis with AGC
+applied through the same filter/gain chain as the gather views.
 
 <img src="https://raw.githubusercontent.com/zzzzswh/gathervis/main/docs/images/velocity_qc.png" width="440" alt="velocity model QC with depth axis"/>
 
-The screenshot at the top shows a modelled line as a `(shot, rec, time)`
-cube; above is the 3-D velocity model behind such data, viewed with
-`axes=('x','y','depth')` — depth labels and min/max color limits come
-automatically for property volumes.
+Above is the 3-D velocity model behind that modelling run, viewed with
+`axes=('x','y','depth')`; property volumes get depth labels and min/max colour
+limits automatically.
 
-### Wiggle or variable density, with the colormaps you actually use
+This tab offers one cuboid and three planes, for a quick look at the volume
+the gathers live in rather than for volume interpretation. **If your data is a
+volume in the first place, [cigvis](https://github.com/JintaoLee-Roger/cigvis)
+is the recommended tool**: it visualizes 3-D seismic data together with
+labels, faults, RGT, horizon surfaces, well-log trajectories and curves and
+geological bodies, and supports 2-D and 1-D data as well, using vispy for 3-D,
+matplotlib for 2-D/1-D and plotly in Jupyter, with optional viser and OpenVDS
+backends. The slice view here follows its interaction style.
 
-One click switches every 2-D panel between variable density and
-variable-area wiggle, and a *flip polarity* checkbox negates the display
-(wiggle fill lobes and density colors swap together — SEG normal ↔ reverse).
-Colormaps: `gray` (the default), `seismic`, `petrel` (anchors from cigvis)
-and `rainbow`, each with a `_r` reversed variant. The clip-percentile slider sets the color
-limits — and doubles as wiggle gain.
+### Display modes and colormaps
+
+Every 2-D panel switches between variable density and variable-area wiggle.
+*flip polarity* negates the display, swapping wiggle fill lobes and density
+colours together (SEG normal ↔ reverse). Colormaps are `gray` (the default),
+`seismic`, `petrel` (anchors from cigvis) and `rainbow`, each with an `_r`
+reversed variant. The *clip percentile* slider sets the colour limits and
+doubles as wiggle gain.
 
 <img src="https://raw.githubusercontent.com/zzzzswh/gathervis/main/docs/images/display_modes.png" width="620" alt="variable density vs wiggle"/>
 
-### Zero-phase trapezoid filters
+### Filters and gain
 
-Classic ramped (Ormsby-style) **low-pass / high-pass / band-pass** on the
-gather views: linear ramps over `f1–f2` (low cut) and `f3–f4` (high cut),
-exactly zero-phase, applied per displayed gather so memmap laziness is
-preserved. Edit a corner frequency and the panel re-filters instantly.
+Trapezoid (Ormsby-style) **low-pass / high-pass / band-pass** filtering:
+linear ramps over `f1–f2` (low cut) and `f3–f4` (high cut), zero phase. Gain
+is either **AGC** (sliding-window RMS, window length editable) or **trace
+balance**. The chain is filter → gain; with gain active the colour limits are
+recomputed from the processed gather.
+
+Processing is applied per displayed gather, so memmap laziness is preserved.
+The Volume slices tab uses the same chain: volumes up to 512 MB are processed
+whole on each change to the chain, keeping the three planes consistent, while
+larger memmaps fall back to raw data with a note in the sidebar. If the input
+is a CuPy array, filtering, gain and picking run on the GPU.
 
 <img src="https://raw.githubusercontent.com/zzzzswh/gathervis/main/docs/images/filters.png" width="620" alt="band-pass filtering a noisy gather"/>
 
-### Draw windows → spectra → export
+### Analysis windows and amplitude spectra
 
 Draw **rectangles** (SHIFT+drag, or click-move-click) or **polygons** (click
-vertices, ESC to finish) directly on a gather, then hit *compute spectrum*:
-the plain DFT of the gated samples, `|rfft|` in dB against the window's own
-peak. No taper, no normalization, no smoothing — a taper is literally a
-convolution of the spectrum (periodic Hann is `(-1/4, 1/2, -1/4)` on the
-complex spectrum), so there isn't one. `traces` picks how the window's traces
-reach the plot: **per trace** (each drawn, nothing combined), **mean**, or
-**middle trace**, and `y axis` switches between linear **amplitude**
-(normalized so the loudest curve peaks at 1.0 — this is where you see the
-dominant frequency) and **dB** (which stretches the weak tail and the noise
-floor into view). The legend states what was plotted and the frequency
-spacing `df = 1/(gate length)`.
+vertices, ESC to finish) on a gather, then press *compute spectrum*: the gated
+samples go straight into `rfft` and `|X|` is plotted relative to the window's
+own peak. No taper, no normalization, no smoothing.
 
-Two consequences come with asking for no processing, both properties of the
-DFT of a rectangularly cut record rather than bugs: the boxcar gate's own
-sidelobes fall off only as 1/f, so roughly 40 dB down you are reading the
-window rather than the data; and one trace's periodogram has 2 degrees of
-freedom, so its scatter is real and does not shrink with record length.
-Averaging cuts that scatter by `sqrt(N)` — but only for *independent* traces;
-on a coherent gather the traces are near-copies and the mean barely differs
-from one of them. *Export
-windows* downloads the definitions as JSON (trace/time coordinates + dt) for
-reuse elsewhere. Signal window vs. noise window comparisons take ten seconds.
+`traces` decides how the window's traces reach the plot: **per trace** (each
+one drawn), **mean** (magnitudes averaged) or **middle trace**. `y axis`
+switches between linear **amplitude** (normalized so the loudest curve peaks at
+1.0) and **dB**. The legend states what was plotted and the frequency spacing
+`df = 1/(gate length)`.
+
+Taking no taper has two consequences, both properties of the DFT of a
+rectangularly cut record: the boxcar gate's sidelobes fall off only as 1/f, so
+roughly 40 dB below the peak what is read is the window rather than the data;
+and a single trace's periodogram is a 2-degree-of-freedom estimate whose
+scatter does not shrink with record length. Averaging reduces that scatter by
+`sqrt(N)`, but only for independent traces — on a coherent gather the traces
+are near-copies and the mean differs little from any one of them. A taper
+would be a convolution of the spectrum (periodic Hann is `(-1/4, 1/2, -1/4)`
+on the complex spectrum), i.e. smoothing, so none is applied.
+
+Windows export and import as JSON, holding trace/time coordinates and dt.
 
 <img src="https://raw.githubusercontent.com/zzzzswh/gathervis/main/docs/images/windows_spectra.png" width="720" alt="analysis windows and their spectra"/>
 
-### Download the full image
+### f-k spectrum
 
-The panel you see is stride-decimated to a pixel budget before it goes on the
-wire, and bokeh's save tool snapshots the canvas at whatever size the figure
-happens to be — so neither gives you the data at its own resolution. The **⤓ full
-image** button next to *fit* and *fullscreen* does: it re-renders the gather at one
-pixel per trace and per sample and downloads a lossless PNG, with the colormap,
-density/wiggle mode, clip percentile, polarity, trapezoid filter and AGC /
-trace balance exactly as displayed. Wiggle mode draws *every* trace, not the
-subset the browser gets. No matplotlib, no headless browser — the PNG is
-written by numpy + stdlib zlib.
+**f-k spectrum** in the *Spectrum* block transforms the **first** drawn window
+in both directions: wavenumber across, frequency up, amplitude in dB relative
+to the window's own peak over a fixed 60 dB range. A linear event maps to a ray
+through the origin, so events of different apparent velocity separate, which is
+what decides whether an apparent-velocity filter is needed and how to set it.
 
-Same thing from a script, for batch figures:
+Convention: **positive k means events dipping toward increasing trace number**.
+The axis is in cycles per trace, not per metre — trace spacing is not
+necessarily uniform, least of all after an offset or azimuth sort. As with the
+1-D spectrum, the transform uses the currently displayed gather, i.e. after the
+filter/gain chain, and recomputes when the shot, sort or filter changes. The
+window must cover at least 4 traces and 8 samples. Both spectrum panels share
+the *size* selector (S / M / L) and both carry a crosshair and a `k` / `f`
+readout.
+
+### Full-resolution export
+
+Panels are stride-decimated to a pixel budget before going on the wire, and
+bokeh's save tool snapshots the canvas at its current on-screen size; neither
+gives the data at its own resolution. The **⤓ full image** button next to
+*fit* and *fullscreen* re-renders the gather at one pixel per trace and per
+sample and downloads a lossless PNG, with colormap, display mode, clip
+percentile, polarity, filter and gain as displayed. Wiggle mode draws every
+trace, not the subset the browser receives. The PNG is written by numpy and
+stdlib zlib, with no matplotlib or headless browser involved.
+
+For a crop of the current view, use the toolbar's save icon.
+
+The same from a script, for batch figures:
 
 ```python
 from gathervis.process import bandpass, agc
@@ -285,7 +339,33 @@ a = agc(bandpass(g.shot(7), g.dt, f3=60, f4=80), g.dt)
 save_png("shot007.png", a, cmap="gray")            # or display="wiggle"
 ```
 
-## Remote usage (pick one)
+### First-break and event picking
+
+The toolbar's point tool adds a pick on tap, moves one on drag and deletes the
+selected one on BACKSPACE. A dotted line connects the picks in trace order.
+**auto pick** runs a gapped STA/LTA first-break picker on the currently
+displayed (i.e. filtered) gather, with STA, LTA and threshold editable: the LTA
+window ends where the STA window starts, so a break arriving early in the
+record can still trigger, and a trigger must hold for about STA/2 to exclude
+single-sample noise. **snap** moves a pick to the nearest peak, trough or
+|max| of its own trace, searching ±30 ms.
+
+Picks are stored per shot and follow the shot being browsed. They are keyed to
+the trace rather than the screen column, so they still match after a re-sort.
+Export and import as CSV, `shot,trace,time_s`.
+
+### SEG-Y import
+
+`gv.from_segy('field.sgy')`, or `gathervis field.sgy` from the shell. dt is
+read from the binary header, traces are grouped into shots by field record
+number (FFID), and source and receiver coordinates are read from the standard
+trace-header words and scaled by the SEG-Y coordinate scalar rule, so the
+Geometry and Fold tabs are immediately usable. Shots with unequal trace counts
+are zero-padded and a warning is printed. Requires the optional `segyio`
+package; the file is read into memory, and one estimated above `max_gb`
+(8 GB by default) is refused.
+
+## Remote usage
 
 1. **VS Code Remote-SSH (recommended).** Run any example in the integrated
    terminal; VS Code auto-forwards the port and the printed
@@ -296,7 +376,7 @@ save_png("shot007.png", a, cmap="gray")            # or display="wiggle"
    the URL locally. If the port is busy gathervis auto-picks a free one and
    prints it.
 
-## Semantics (the one rule to remember)
+## Array semantics
 
 The last axis is always the vertical one: **time** for data, **depth** for
 property volumes. A bare 3-D array defaults to `(shot, rec, time)` and is
@@ -308,30 +388,26 @@ app) says in what order — the three are independent.
 
 ## Design notes
 
-* **Lazy everywhere.** memmap-backed data; browsing a shot reads only that
-  shot's bytes; slicing reads only that slice; filtering and spectra apply to
-  the displayed gather only. Sorting a shot by acquisition order or by
-  receiver line stays lazy too (a reshape, a slice); only offset/azimuth
-  order has to materialise the shot — one shot, not the file.
-* **Cheap wire format.** Panels are stride-decimated to a pixel budget and
-  quantized to uint8 server-side before shipping to the browser.
-* **Ordering is not processing.** A sort returns the shot's own traces in a
-  different order and the filter/gain chain runs on the result, so there is
-  one processing path for 2-D and 3-D shots alike.
-* **Two rendering primitives.** 2-D panels are bokeh images/wiggles; volumes
-  are plotly WebGL slice planes. Both are fed by the same decimate → uint8
-  pipeline.
-* **Offscreen twin.** Image export bypasses the decimation entirely: the
-  same processed array is rasterized at native resolution and encoded as a
-  PNG with numpy + stdlib zlib, so no plotting or imaging dependency is
-  added for it.
-* **Live scrubbing.** Sliders update while dragging; the 3-D camera, stretch
-  factors, and drawn windows all survive every update. Every 2-D panel has
-  x-only / y-only wheel-zoom for per-axis scaling, and a live cursor readout
-  under the panel (trace, time, and the amplitude of the pixel under the
-  mouse) that runs entirely client-side. The spectrum panel gets the same
-  readout (frequency / dB) plus a toolbar-toggleable crosshair for comparing
-  peak heights; gather panels have the crosshair too.
+* **Lazy loading.** Data opens as a memmap; browsing a shot reads only that
+  shot's bytes, slicing reads only that slice, and filtering and spectra apply
+  to the displayed gather only. Sorting by acquisition order or receiver line
+  is lazy too (a reshape, a slice); only offset/azimuth order materialises the
+  shot — one shot, not the file.
+* **Wire format.** Panels are stride-decimated to a pixel budget and quantized
+  to uint8 server-side before being sent to the browser.
+* **Ordering separate from processing.** A sort only changes trace order and
+  returns the shot's own traces; the filter/gain chain then runs on the result,
+  so 2-D and 3-D shots share one processing path.
+* **Two rendering paths.** 2-D panels are bokeh images or wiggles, volumes are
+  plotly WebGL slice planes, both fed by the same decimate → uint8 pipeline.
+* **Export path independent of display.** Image export bypasses decimation:
+  the same processed array is rasterized at native resolution and encoded as a
+  PNG with numpy and stdlib zlib, adding no plotting or imaging dependency.
+* **Interaction state preserved.** Sliders update while dragging; the 3-D
+  camera, stretch factors and drawn windows survive updates. Every 2-D panel
+  has x-only / y-only wheel zoom and a client-side cursor readout (trace, time,
+  amplitude under the mouse); the spectrum panels have the same readout and a
+  toggleable crosshair.
 
 ## Roadmap
 
@@ -344,35 +420,10 @@ common-offset/time slicing, NMO preview (event picking: done). Full plan:
 [`docs/plan.md`](https://github.com/zzzzswh/gathervis/blob/main/docs/plan.md). *And whatever you ask for — see the note at
 the top.*
 
-## Related projects
-
-### cigvis
-
-[**cigvis**](https://github.com/JintaoLee-Roger/cigvis) — my advisor's project,
-and the tool to reach for when your data is a **volume** rather than
-**gathers**. It visualizes 3-D seismic data together with everything that goes
-on top of it — labels, faults, RGT, horizon surfaces, well-log trajectories and
-curves, geological bodies — as well as 2-D and 1-D data, driven by vispy for
-3-D, matplotlib for 2-D/1-D and plotly for Jupyter, with optional viser and
-OpenVDS backends.
-
-gathervis does not try to compete with it. The two divide by data type:
-
-| | gathervis | cigvis |
-| --- | --- | --- |
-| Data | pre-stack gathers, acquisition geometry | volumes + interpretation products |
-| Typical use | shot browsing, QC, filters, spectra, picking | 3-D rendering, horizons, faults, wells, bodies |
-| Front end | browser only (Panel / Bokeh), one port | desktop (vispy) + plotly / viser |
-
-gathervis's **Volume slices** tab is a convenience for a quick look at the
-cuboid your gathers live in — deliberately one cuboid, three planes, nothing
-else. The moment you want real volume interpretation, use cigvis.
-
 ## Acknowledgements
 
-The 3-D slice view follows the interaction style of
-[cigvis](https://github.com/JintaoLee-Roger/cigvis) (whose `petrel` colormap
-anchors we borrow, MIT). Modelling examples use
+The `petrel` colormap anchors come from
+[cigvis](https://github.com/JintaoLee-Roger/cigvis) (MIT). Modelling examples use
 [deepwave](https://github.com/ar4/deepwave). Built on
 [Panel](https://panel.holoviz.org/), [Bokeh](https://bokeh.org/) and
 [Plotly](https://plotly.com/javascript/).

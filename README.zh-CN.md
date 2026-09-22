@@ -4,13 +4,13 @@
 
 [English](https://github.com/zzzzswh/gathervis/blob/main/README.md) | **简体中文**
 
-**面向 Python / GPU 服务器的地震道集 Web 查看器。**
+**专业的地震叠前数据可视化 Web 查看器。**
 
-*指向远程服务器上的 100 GB 数据文件，一秒钟在你的浏览器里打开。*
+*在浏览器里打开远程服务器上的叠前数据，像用处理软件一样翻炮、滤波、算谱、拾取。*
 
 ![python](https://img.shields.io/badge/python-3.9%2B-blue)
 ![license](https://img.shields.io/badge/license-MIT-green)
-![tests](https://img.shields.io/badge/tests-58%20passing-brightgreen)
+![tests](https://img.shields.io/badge/tests-147%20passing-brightgreen)
 
 <img src="https://raw.githubusercontent.com/zzzzswh/gathervis/main/docs/images/ui_gather.png" width="820" alt="Shot gathers 页：分析窗、窗内谱（十字线开启）与四个工具块"/>
 <img src="https://raw.githubusercontent.com/zzzzswh/gathervis/main/docs/images/ui_slice.png" width="820" alt="Volume slices 页：AGC 增益后的数据体，沿 shot 轴拉伸 8 倍的三维长方体"/>
@@ -27,18 +27,21 @@
 
 ## 为什么做 gathervis？
 
-* **超大数据秒开。** 文件以懒加载 memmap 方式打开——浏览一炮只读那一炮的字节，
+起因很实际：不想再用 matplotlib 一张张画叠前数据了。换一炮重画一次、改个滤波参数
+重画一次、想看某个时窗的频谱还要再单独写一段——图当然能出来，但整个过程是断的，
+而且每次都得重来。gathervis 把这件事变成专业处理软件那样的查看方式：数据打开就在
+浏览器里，拖滑条翻炮，框一个窗就出谱，改滤波当场更新。
+
+* **大数据秒开。** 文件以懒加载 memmap 方式打开——浏览一炮只读那一炮的字节，
   切一刀只读那一片。100 GB 的原始二进制和 1 MB 的文件打开一样快。
-* **只需要一个浏览器。** 单端口服务。VS Code Remote-SSH 自动转发端口；Jupyter
-  里直接内嵌渲染；裸 `ssh -L` 也行。
-* **观测系统联动。** 给出炮点/检波点坐标就有 Geometry 页——点任意炮点直接跳到
-  它的炮集。
+* **观测系统联动可视化。** 给出炮点/检波点坐标就有 Geometry 页和 Fold 页——点任意
+  炮点直接跳到它的炮集，激活炮的排列同步高亮；CMP 覆盖次数只用坐标就能算。
+* **内置 QC 工具。** wiggle / 变密度显示与行业色标、零相位 Ormsby 滤波、
+  AGC / 道均衡、画窗算谱（振幅谱 + f-k）、手动 / STA-LTA 自动初至拾取。
 * **cigvis 风格的三维视图。** 数据体可渲染为可旋转的长方体 + 三个实时切片平面
   （WebGL）。
-* **内置 QC 工具。** wiggle / 变密度显示、行业色标、零相位 Ormsby 滤波、
-  AGC / 道均衡、画窗谱分析（振幅谱 + f-k）、手动 / STA-LTA 自动初至拾取。
-* **简单好用。** ~1000 行包代码、两个渲染原语、一种传输格式
-  （抽稀 → uint8）。
+* **简单好用。** 只要一个浏览器：单端口服务，VS Code Remote-SSH 自动转发端口，
+  Jupyter 里直接内嵌渲染，裸 `ssh -L` 也行。四个依赖，pip 装完就能用。
 
 ## 安装
 
@@ -81,65 +84,63 @@ gathervis vel.npy --axes x y depth --dt 10 --cmap rainbow
 （倾斜层 + 背斜穹隆 + 低速河道透镜体）上用 deepwave 的三维引擎**打五条二维测线**，
 跑完直接打开查看。
 
-## 功能一览
+## 功能
 
-### 逐炮浏览，与观测系统联动
+### 炮集浏览与观测系统
 
-**Shot gathers** 页（页首第一张图）拖动滑条实时翻炮，按 **←** / **→** 逐炮步进，
-或在 *go to shot* 输入炮号直接跳转。直接在道集上画分析窗、算窗内谱（十字线 + 实时频率/dB 读数方便
-比峰）、手动拾取或 STA/LTA 自动拾取初至——面板下方的四个工具块
-（*Window · Spectrum · Event picking · FB picking*）各管各的。
+**Shot gathers** 页：拖动滑条翻炮，拖动过程中实时更新；**←** / **→** 逐炮步进；
+在 *go to shot* 填炮号直接跳转。面板下方是四个工具块——*Window · Spectrum ·
+Event picking · FB picking*——分别管分析窗、频谱、拾取和初至拾取参数。
 
-**Geometry** 页显示采集布设；点任意炮点即选中该炮并跳回其道集，激活炮的排列同步高亮：
+**Geometry** 页显示炮点与检波点的平面分布。点击任一炮点即选中该炮并切回
+Shot gathers 页，该炮的排列在图上高亮。
 
 <img src="https://raw.githubusercontent.com/zzzzswh/gathervis/main/docs/images/ui_geometry.png" width="820" alt="Geometry 页：五条二维测线，金色星标为激活炮，其排列以蓝色高亮"/>
 
-### 像做处理的人那样看一个三维炮集
+### 三维炮集的道序排列
 
-一个三维炮集是一片接收线组成的 patch，不是一个立方体。处理机构的做法是把整个
-patch 放在同一张 `(道, 时间)` 面板上，改变的是道的**排列顺序**——Shot gathers
-页的 **sort** 选择器做的就是这件事：
+一个三维炮集是若干条接收线组成的 patch。处理流程中通常把整个 patch 放在同一张
+`(道, 时间)` 面板上，改变的是道的排列顺序；Shot gathers 页的 **sort** 选择器提供
+四种顺序。
 
 <img src="https://raw.githubusercontent.com/zzzzswh/gathervis/main/docs/images/sorts.png" width="820" alt="同一个三维炮集分别按采集道序、偏移距、方位角排列"/>
 
-*同一炮的三种看法：采集道序（橙线为接收线分界）、按偏移距、按方位角。*
+*同一炮的三种排列：采集道序（橙色虚线为接收线分界）、偏移距、方位角。*
 
-| 排序 | 用来看什么 |
+| 排序 | 说明 |
 | --- | --- |
-| **as recorded** `(线号, 桩号)` | 采集道序，接收线首尾相接：N 条嵌套双曲线，顶点随 crossline 距离递进。几何错误、线序倒置、极性反转、死道全都会在这张图上跳出来。虚线标出接收线分界。 |
-| **receiver line** | 一次一条线——就是一张普通的二维炮记录——用来细看 patch 里看着不对劲的那条线。 |
-| **offset** | 全部道按源检距排列：整个 patch 塌成一条双曲线，用于动校、切除设计、速度。 |
-| **azimuth** | 按源到检波点的方位角（测量惯例，北 = 0），看方位特性以及 patch 到底覆盖了哪些方位。 |
+| **as recorded** `(线号, 桩号)` | 采集道序，接收线首尾相接，显示为 N 条嵌套双曲线，顶点随 crossline 距离递进。用于检查几何错误、线序倒置、极性反转与死道。虚线标出接收线分界。 |
+| **receiver line** | 一次显示一条接收线，即一张二维炮记录。 |
+| **offset** | 按源检距排列，整个 patch 归并为一条双曲线。用于动校、切除设计与速度分析。 |
+| **azimuth** | 按源到检波点的方位角排列（测量惯例，北 = 0）。用于方位特性与方位覆盖检查。 |
 
-因为每一种排列都是同一张二维面板，分析窗、频谱、拾取、全分辨率导出在三维炮集上
-的用法和二维完全一样。拾取是按**道**存的，不是按屏幕列，所以换排序时拾取跟着道
-走；切到单条线时线外的拾取是隐藏而非删除，切回来还在。
+四种排列都是同一张二维面板，因此分析窗、频谱、拾取与全分辨率导出的用法一致。
+拾取按**道**存储而非按屏幕列，换排序时跟随道走；切到单条线时线外的拾取隐藏而
+不删除，切回后恢复。
 
-`offset` 和 `azimuth` 需要观测系统；`receiver line` 需要四维
-`(shot, recy, recx, time)` 数据——线结构在那里才是显式的。选择器只提供当前数据
-真正做得到的选项，二维测线且无观测系统时整个隐藏。**Shot volume** 页同时把当前
-炮显示为长方体，走同一条滤波/增益链——作为旁证，而不是入口。
+`offset` 与 `azimuth` 需要观测系统；`receiver line` 需要四维
+`(shot, recy, recx, time)` 数据，线结构在该形状下才是显式的。选择器只列出当前
+数据支持的选项，二维测线且无观测系统时不显示。**Shot volume** 页同时把当前炮
+渲染为长方体，使用同一条滤波/增益链。
 
-试一下：`python examples/quickstart.py patch`。
+示例：`python examples/quickstart.py patch`。
 
-### 采集质控：CMP 覆盖次数图
+### CMP 覆盖次数图
 
-**Fold** 页把每个炮检对的中点装箱计数：覆盖次数图上的一个洞，就是成像上的一个
-洞——而这在任何处理开始之前就能看见。
+**Fold** 页对每个炮检对的中点做矩形装箱并计数。
 
 <img src="https://raw.githubusercontent.com/zzzzswh/gathervis/main/docs/images/fold.png" width="520" alt="正交陆上三维的 CMP 覆盖次数图，中间满覆盖、边缘羽化"/>
 
-*一个正交陆上三维的覆盖次数（200 m 接收线上 25 m 桩距，200 m 炮线上 50 m 炮点）。
-固定满排列，所以覆盖次数在中间达到峰值、向边缘羽化。*
+*正交陆上三维的覆盖次数：200 m 接收线上 25 m 桩距，200 m 炮线上 50 m 炮点，
+固定满排列。*
 
-网格默认取 in-line 半个桩距、cross-line 半个线距——也就是自然的 CMP 采样——两个
-方向都可以改，于是加粗网格能换来多少覆盖次数、又损失多少分辨率，一眼就能比出来。
-空 bin 画成背景色而不是色标最低端，所以有效区自己的形状能直接读出来。摘要行给出
-网格尺寸、有效 bin 数、最大/平均覆盖次数，以及道总数（它必须等于 `炮数 x 检波点数`，
-值得扫一眼当作几何校验和）。
+bin 尺寸默认取 in-line 半个桩距、cross-line 半个线距，即自然的 CMP 采样；两个
+方向都可在页面上修改，*default bin* 恢复默认。空 bin 以背景色绘制，不占用色标
+最低端。摘要行给出网格尺寸、有效 bin 数、最大与平均覆盖次数，以及道总数——后者
+应等于 `炮数 × 检波点数`，可作几何校验。
 
-它**只用坐标**计算，所以在 100 GB 工区上和在玩具数据上代价一样，对一个没有任何道
-数据的裸 `Geometry` 也能算：
+计算只用坐标，不读取道数据，因此代价与数据体积无关，对没有道数据的裸
+`Geometry` 同样可用：
 
 ```python
 from gathervis.survey import fold, default_bin
@@ -148,7 +149,16 @@ grid.counts                                  # (ny, nx) 每个 bin 的道数
 grid.nlive, grid.extent, grid.bin_of(x, y)
 ```
 
-点击一个 bin 会选中它——这就是偏移距-方位玫瑰图要挂的钩子（路线图下一项）。
+点击某个 bin 会选中并勾出它。该 bin 的偏移距-方位分布可由同一模块计算，应用内
+的玫瑰图尚未实现：
+
+```python
+from gathervis.survey import offsets_azimuths_in_bin, azimuth_sectors
+offs, azis, shots = offsets_azimuths_in_bin(ds.geometry, grid, ix, iy)
+edges, counts = azimuth_sectors(azis, nsector=24)   # 测量惯例，北 = 0
+```
+
+`azimuth_sectors` 返回的非空扇区数即该 bin 的方位覆盖情况。
 
 ### 操作速查
 
@@ -160,6 +170,9 @@ grid.nlive, grid.extent, grid.bin_of(x, y)
 | 加 / 移 / 删拾取点 | 工具栏点拾取工具 → 点击添加、拖动移动、点选 + **BACKSPACE** 删除（或 *clear shot* / *clear all*） |
 | 自动拾初至 | 设好 STA / LTA / threshold → *auto pick*；再用 *snap*（peak / trough / \|max\|）或手动拖动精修 |
 | 比较谱峰高度 | 工具栏十字线图标开准星，配合面板下方的 freq / dB 读数 |
+| 计算 f-k 谱 | Spectrum 块的 *f-k spectrum*，作用于第一个窗 |
+| 复用一组分析窗 | Window 块的 *export JSON* / *import windows (.json)* |
+| 拾取结果导出再导回 | 拾取块的 *export CSV* / 导入，格式 `shot,trace,time_s` |
 | 单轴伸缩 | 工具栏的 x-only / y-only 滚轮缩放工具 |
 | 调整三维长方体比例 | 每个维度各一条 stretch 滑条（1.0 居中，0.125×–8×） |
 | 跳到某一炮 | 拖炮号滑条、*go to shot* 输入，或在 Geometry 页点炮点 |
@@ -170,77 +183,95 @@ grid.nlive, grid.extent, grid.bin_of(x, y)
 | 调谱面板大小 | Spectrum 块里的 *size*（S / M / L） |
 | 存图 | **⤓ full image** 按钮（原分辨率全图）· 工具栏 save 图标（当前视野，屏幕分辨率） |
 | 翻炮 | **←** / **→** |
-| 把眼前这个视图发给别人 | 直接复制地址栏 —— 炮号、排序、色标、clip、极性、滤波、增益都写在 URL 里 |
+| 分享当前视图 | 复制地址栏：当前页签、炮号、排序、线号、色标、clip、极性、滤波、增益（含 AGC 窗长）都写在 URL 里 |
 
-同一份速查在应用里点 *? gestures* 按钮随时可看。快捷键只有左右方向键这一个，
-其余都是设一次就不动的控件，留在各自的控件上。光标在输入框里时方向键自动让位，
-整体关掉用 `gv.show(..., keys=False)`。
+同一份速查在应用里点 *? gestures* 按钮可看。快捷键只有左右方向键，其余控件设一次
+即保持。光标在输入框内时方向键不响应，`gv.show(..., keys=False)` 可整体关闭。
 
-### 数据体的三维长方体切片（cigvis 风格）
+### 三维体切片
 
-任何三维数组——整条测线、一个三维炮集、一个速度模型——都渲染为线框长方体 +
-三个轴对齐切片平面。拖动滑条移动切片（每步只传输那一片抽稀数据），自由旋转/缩放
-（相机在任何更新后保持不动），用逐轴拉伸滑条（0.125×–8×，几何级数档位，1.0 居中）
-重塑长方体——页首第二张图就是沿 shot 轴拉伸 8 倍、经同一条滤波/增益链做过
-AGC 的测线。
+任何三维数组——整条测线、一个三维炮集、一个速度模型——渲染为线框长方体加三个
+轴对齐切片平面。滑条移动切片，每步只传输该切片的抽稀数据；旋转与缩放后相机在
+后续更新中保持；每个轴各有一条拉伸滑条（0.125×–8×，几何级数档位，1.0 居中）。
+页首第二张图为沿 shot 轴拉伸 8 倍、经同一条滤波/增益链做过 AGC 的测线。
 
 <img src="https://raw.githubusercontent.com/zzzzswh/gathervis/main/docs/images/velocity_qc.png" width="440" alt="depth 轴速度模型 QC"/>
 
-上图是同一套正演背后的三维速度模型，以 `axes=('x','y','depth')` 查看——
-属性体自动使用深度标注与最小/最大值式色标范围。
+上图为同一套正演所用的三维速度模型，以 `axes=('x','y','depth')` 查看；属性体
+自动使用深度标注与 min/max 色标范围。
 
-### wiggle 或变密度，配上你真正在用的色标
+本页只提供一个长方体和三个切片面，用于快速查看道集所在的数据体，不是体解释
+工具。**数据本身是数据体时，推荐使用
+[cigvis](https://github.com/JintaoLee-Roger/cigvis)**：它可将三维地震数据与标签、
+断层、RGT、层位面、井轨迹与测井曲线、三维地质体一并可视化，也支持二维与一维
+数据；三维后端为 vispy，二维/一维为 matplotlib，Jupyter 环境为 plotly，另有
+viser 与 OpenVDS 可选。gathervis 的切片视图沿用其交互风格。
 
-一键在变密度与变面积 wiggle 之间切换所有二维面板，*flip polarity* 复选框整体翻转
-极性（wiggle 充填瓣与变密度红蓝同步互换——SEG normal ↔ reverse）。色标：
-`gray`（默认）、`seismic`、`petrel`（锚点取自 cigvis）、`rainbow`，各配 `_r` 反转变体。
-clip percentile 滑条设定色标范围——同时兼作 wiggle 增益。
+### 显示方式与色标
+
+所有二维面板可在变密度与变面积 wiggle 之间切换。*flip polarity* 翻转显示极性，
+wiggle 充填瓣与变密度色标同步互换（SEG normal ↔ reverse）。色标为 `gray`（默认）、
+`seismic`、`petrel`（锚点取自 cigvis）、`rainbow`，各有 `_r` 反转变体。
+*clip percentile* 滑条设定色标范围，在 wiggle 模式下同时作为增益。
 
 <img src="https://raw.githubusercontent.com/zzzzswh/gathervis/main/docs/images/display_modes.png" width="620" alt="变密度 vs wiggle"/>
 
-### 零相位梯形滤波与增益
+### 滤波与增益
 
-道集视图上的经典带斜坡（Ormsby 式）**低通 / 高通 / 带通**：`f1–f2`（低切）与
-`f3–f4`（高切）线性斜坡，严格零相位；外加 **AGC**（滑动窗 RMS，窗长可调）与
-**道均衡**——处理链为滤波 → 增益，增益开启时色标范围自动重算。逐炮按需处理，
-memmap 懒加载不受影响。Volume-slices 页跟随同一条链：512 MB 以内的数据体整体
-处理一次（链条变化时），三个切片严格一致；更大的 memmap 回退为原始数据并显示
-提示。若传入 CuPy 数组，全部处理透明地在 GPU 上运行。
+梯形（Ormsby 式）**低通 / 高通 / 带通**滤波：`f1–f2` 低切斜坡、`f3–f4` 高切斜坡，
+线性过渡，零相位。增益为 **AGC**（滑动窗 RMS，窗长可调）或**道均衡**。处理链为
+滤波 → 增益；增益开启时色标范围从处理后的道集重新计算。
+
+处理按当前显示的道集逐炮进行，不影响 memmap 懒加载。Volume slices 页使用同一条
+链：512 MB 以内的数据体在链变化时整体处理一次，保证三个切片一致；超过该尺寸的
+memmap 回退为原始数据，并在侧栏提示。输入为 CuPy 数组时，滤波、增益与拾取在
+GPU 上执行。
 
 <img src="https://raw.githubusercontent.com/zzzzswh/gathervis/main/docs/images/filters.png" width="620" alt="带通滤波压制含噪道集"/>
 
-### 画窗 → 谱 → 导出
+### 分析窗与振幅谱
 
-直接在道集上画**矩形**（SHIFT+拖拽，或点-移-点）或**多边形**（逐点点击，ESC
-收尾）分析窗，点 *compute spectrum*：对门控后的样点做纯 DFT，画 `|rfft|` 相对
-本窗峰值的 dB。不加窗函数、不做归一、不做任何平滑——窗函数本身就是对频谱做
-卷积（周期 Hann 严格等于对复谱做 `(-1/4, 1/2, -1/4)` 三点卷积），所以不用。
-`traces` 选窗内各道怎么进图：**per trace**（逐道画，不做任何合并）、**mean**、
-**middle trace**；`y axis` 切换线性**振幅**（归一到最响的那条曲线峰值为 1.0，
-主频一眼可见）和 **dB**（把弱尾巴和噪声底拉开看）。图例写明画的是什么，以及
-频率间隔 `df = 1/时窗长度`。
+在道集上画**矩形**窗（SHIFT+拖拽，或点-移-点）或**多边形**窗（逐点点击，ESC
+收尾），点 *compute spectrum* 计算窗内数据的振幅谱：对门控后的样点直接做 `rfft`，
+绘制 `|X|` 相对本窗峰值的值。不加窗函数，不做归一化与平滑。
 
-「不做处理」有两个必然的代价，它们是矩形截断后 DFT 的固有性质，不是 bug：
-矩形门的旁瓣只按 1/f 衰减，所以大约低于峰值 40 dB 之后，你读到的是窗而不是
-数据；单道周期图只有 2 个自由度，它的抖动是真实的，且不随记录变长而减小。
-多道平均把抖动压掉 `sqrt(N)` 倍——但仅对**相互独立**的道成立；在相干性好的
-道集上各道近乎复制品，平均值和单道几乎没区别。窗定义可**导出 / 导入
-JSON**。信号窗 vs 噪声窗的对比十秒钟搞定。
+`traces` 决定窗内各道如何进图：**per trace**（逐道绘制）、**mean**（幅值平均）、
+**middle trace**（取窗中心道）。`y axis` 在线性**振幅**（归一到最大曲线峰值为
+1.0）与 **dB** 之间切换。图例标明绘制内容与频率间隔 `df = 1/时窗长度`。
+
+不加窗函数带来两个后果，均为矩形截断后 DFT 的固有性质：矩形门的旁瓣按 1/f
+衰减，低于峰值约 40 dB 之后读到的主要是窗函数而非数据；单道周期图是 2 自由度
+估计，其抖动不随记录长度减小。多道平均可将抖动降低 `sqrt(N)` 倍，但仅对相互
+独立的道成立——相干道集上各道近似相同，平均值与单道差别很小。加窗函数等价于对
+复谱做卷积（周期 Hann 即 `(-1/4, 1/2, -1/4)` 三点卷积），属于平滑，故不采用。
+
+窗定义可导出与导入 JSON，内容为道/时间坐标与 dt。
 
 <img src="https://raw.githubusercontent.com/zzzzswh/gathervis/main/docs/images/windows_spectra.png" width="720" alt="分析窗及其谱"/>
 
-### 下载原图
+### f-k 谱
 
-面板上屏之前会按像素预算做 stride 抽稀，而 bokeh 自带的 save 工具存的是 canvas
-截图、尺寸取决于图当前在屏幕上多大——两者都给不了"按数据自身分辨率"的图。
-*fit* / *fullscreen* 右边的 **⤓ full image** 按钮可以：它把道集按一道一像素、一采样一像素
-重新渲染，下载无损 PNG，色标、变密度 / wiggle、剪切百分位、极性、梯形滤波、
-AGC / 道均衡全部与屏幕一致。wiggle 模式下画的是**全部道**，而不是浏览器拿到的
-那个子集。不依赖 matplotlib、不用无头浏览器——PNG 由 numpy + 标准库 zlib 写出。
+*Spectrum* 块的 **f-k spectrum** 对**第一个**已画窗做二维变换：横轴波数，纵轴
+频率，幅值为相对本窗峰值的 dB，动态范围固定 60 dB。线性同相轴在 f-k 域中表现为
+过原点的射线，视速度不同的事件因此分离，可用于判断是否需要以及如何设计视速度
+滤波。
 
-想要局部就用工具栏自带的 save 图标（当前视野，屏幕分辨率）。
+约定：**k 为正表示同相轴向道号增大的方向倾斜**。横轴单位为周/道而非周/米——道间距
+不一定均匀，按偏移距或方位角排序后尤其如此。与一维谱相同，计算基于当前显示的
+（即经过滤波/增益链的）道集，换炮、换排序或改滤波后自动重算。窗至少需覆盖 4 道
+与 8 个采样点。两个谱面板共用 *size*（S / M / L），均带十字线与 `k` / `f` 读数。
 
-脚本里批量出图同理：
+### 全分辨率导出
+
+面板上屏前按像素预算做 stride 抽稀，bokeh 工具栏的 save 存的是当前 canvas 截图，
+两者都不是数据自身的分辨率。*fit* / *fullscreen* 右侧的 **⤓ full image** 按钮按
+一道一像素、一采样一像素重新渲染并下载无损 PNG，色标、显示方式、剪切百分位、
+极性、滤波与增益均与屏幕一致；wiggle 模式下绘制全部道，而非浏览器收到的子集。
+PNG 由 numpy 与标准库 zlib 写出，不依赖 matplotlib 或无头浏览器。
+
+需要当前视野的局部截图时用工具栏的 save 图标。
+
+脚本中批量出图：
 
 ```python
 from gathervis.process import bandpass, agc
@@ -250,21 +281,25 @@ a = agc(bandpass(g.shot(7), g.dt, f3=60, f4=80), g.dt)
 save_png("shot007.png", a, cmap="gray")            # 或 display="wiggle"
 ```
 
-### 同相轴拾取
+### 初至与同相轴拾取
 
-工具栏点拾取工具——点击添加、拖动微调、BACKSPACE 删除——虚线按道号连接拾取点，
-走时形态一目了然。**auto pick** 运行 gapped STA/LTA 初至拾取（STA / LTA / 阈值
-可调，带抗尖峰的持续触发判据），作用于当前显示（即滤波后）的道集；**snap** 把
-任意拾取吸附到该道最近的波峰 / 波谷 / |最大值|。拾取按炮存储、随浏览跟随；
-**导出 / 导入 CSV**（`shot,trace,time_s`），可直接喂给层析 / FWI 流程。
+工具栏的点工具：点击添加拾取、拖动移动、BACKSPACE 删除选中项。拾取点按道号以
+虚线相连。**auto pick** 对当前显示（即滤波后）的道集运行 gapped STA/LTA 初至
+拾取，STA、LTA 与阈值可调；LTA 窗在 STA 窗起点结束，因此靠近记录开头的初至也能
+触发，且触发需持续约 STA/2 以排除单点噪声。**snap** 将拾取吸附到所在道最近的
+波峰 / 波谷 / |最大值|，搜索范围 ±30 ms。
+
+拾取按炮存储并随浏览跟随，键为道号而非屏幕列，因此换排序后仍对应同一道。可导出
+与导入 CSV，格式为 `shot,trace,time_s`。
 
 ### SEG-Y 导入
 
-`gv.from_segy('field.sgy')` 或直接 `gathervis field.sgy`——dt 读自二进制卷头，
-炮按 FFID 分组，炮检点坐标（含 SEG-Y 标量规则）自动进入 Geometry 页；非规则炮
-补零并警告。需要可选依赖 `segyio`。
+`gv.from_segy('field.sgy')`，或命令行 `gathervis field.sgy`。dt 读自二进制卷头，
+道按 FFID 分组为炮，炮点与检波点坐标读自标准道头字并按 SEG-Y 标量规则换算，
+Geometry 与 Fold 页随即可用。道数不等的炮补零对齐并打印警告。需要可选依赖
+`segyio`；文件整体读入内存，估算超过 `max_gb`（默认 8 GB）时拒绝打开。
 
-## 远程使用（三选一）
+## 远程使用
 
 1. **VS Code Remote-SSH（推荐）。** 在集成终端里跑任意示例；VS Code 自动转发
    端口，打印出的 `http://localhost:8080` 直接可点。零配置。
@@ -273,7 +308,7 @@ save_png("shot007.png", a, cmap="gray")            # 或 display="wiggle"
 3. **裸终端。** `ssh -L 8080:localhost:8080 user@gpu-server`，然后本地打开
    URL。端口被占用时 gathervis 自动换一个空闲端口并打印出来。
 
-## 语义（唯一要记住的规则）
+## 数组语义
 
 最后一维永远是纵轴：数据用 **time**，属性体用 **depth**。裸三维数组默认为
 `(shot, rec, time)` 并逐炮浏览；四维数组默认为 `(shot, recy, recx, time)`，每炮
@@ -283,18 +318,20 @@ save_png("shot007.png", a, cmap="gray")            # 或 display="wiggle"
 
 ## 设计笔记
 
-* **处处懒加载。** memmap 数据；浏览一炮只读那一炮的字节；切片只读那一片；
-  滤波与谱分析只作用于当前显示的道集。按采集道序或按接收线排序同样是懒的
-  （一次 reshape、一次切片）；只有按偏移距/方位角排序需要把这一炮实体化——
-  是一炮，不是整个文件。
-* **廉价传输格式。** 面板在服务端按像素预算跨步抽稀并量化为 uint8 后才上线。
-* **排序不是处理。** 排序返回的是这一炮自己的道、只是换了顺序，滤波/增益链再
-  作用于结果——于是二维和三维炮集共用同一条处理路径。
-* **两个渲染原语。** 二维面板是 bokeh 图像 / wiggle；数据体是 plotly WebGL
-  切片平面。二者共用同一条抽稀 → uint8 管线。
-* **实时拖动。** 滑条拖动中实时更新；三维相机、拉伸倍率、已画的窗在任何更新后
-  全部保留。每个二维面板都带 x / y 单轴滚轮缩放和光标读数（道号、时间、鼠标
-  所在像素的振幅，纯客户端运行），谱面板带同款读数与可开关的十字线。
+* **懒加载。** 数据以 memmap 打开；浏览一炮只读该炮的字节，切片只读该切片；
+  滤波与谱分析只作用于当前显示的道集。按采集道序或接收线排序也是懒的（一次
+  reshape、一次切片），只有按偏移距/方位角排序需要实体化该炮的数据——一炮，
+  不是整个文件。
+* **传输格式。** 面板在服务端按像素预算跨步抽稀并量化为 uint8 后再发往浏览器。
+* **排序与处理分离。** 排序只改变道的顺序，返回的仍是该炮自己的道，滤波/增益链
+  作用于排序结果，因此二维与三维炮集共用一条处理路径。
+* **两种渲染方式。** 二维面板为 bokeh 图像 / wiggle，数据体为 plotly WebGL 切片
+  平面，二者共用同一条抽稀 → uint8 管线。
+* **导出路径独立。** 导出图不经过抽稀：同一个处理后的数组按原分辨率光栅化，由
+  numpy 与标准库 zlib 编码为 PNG，因此不引入额外的绘图或图像依赖。
+* **交互状态保持。** 滑条拖动过程中更新；三维相机、拉伸倍率与已画的窗在更新后
+  保留。每个二维面板带 x / y 单轴滚轮缩放和光标读数（道号、时间、当前像素振幅，
+  纯客户端计算），谱面板带同样的读数与可开关的十字线。
 
 ## 路线图
 
@@ -306,31 +343,10 @@ save_png("shot007.png", a, cmap="gray")            # 或 display="wiggle"
 （同相轴拾取：已完成）。完整规划见 [`docs/plan.md`](https://github.com/zzzzswh/gathervis/blob/main/docs/plan.md)。
 *以及任何你提出的需求——见页首。*
 
-## 相关项目
-
-### cigvis
-
-[**cigvis**](https://github.com/JintaoLee-Roger/cigvis) —— 我导师的作品，也是当你的
-数据是**数据体**而不是**道集**时应该用的工具。它可视化三维地震数据以及叠加在其
-之上的一切——标签、断层、RGT、层位面、井轨迹与测井曲线、三维地质体——同时也支持
-二维与一维数据；三维用 vispy，二维/一维用 matplotlib，Jupyter 环境用 plotly，另有
-viser 与 OpenVDS 后端可选。
-
-gathervis 不打算和它竞争，两者按数据类型分工：
-
-| | gathervis | cigvis |
-| --- | --- | --- |
-| 数据 | 叠前道集、观测系统 | 数据体 + 解释成果 |
-| 典型用途 | 逐炮浏览、QC、滤波、频谱、拾取 | 三维渲染、层位、断层、井、地质体 |
-| 前端 | 纯浏览器（Panel / Bokeh），一个端口 | 桌面（vispy）+ plotly / viser |
-
-gathervis 的 **Volume slices** 页签只是为了快速看一眼道集所在的那个立方体——刻意
-只有一个长方体、三个切片面，没有别的。一旦需要真正的体解释，请用 cigvis。
-
 ## 致谢
 
-三维切片视图沿用 [cigvis](https://github.com/JintaoLee-Roger/cigvis) 的交互风格
-（并借用其 `petrel` 色标锚点，MIT）。正演示例使用
+`petrel` 色标锚点取自 [cigvis](https://github.com/JintaoLee-Roger/cigvis)（MIT）。
+正演示例使用
 [deepwave](https://github.com/ar4/deepwave)。基于
 [Panel](https://panel.holoviz.org/)、[Bokeh](https://bokeh.org/) 与
 [Plotly](https://plotly.com/javascript/) 构建。
