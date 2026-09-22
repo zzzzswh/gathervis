@@ -94,6 +94,62 @@ gathervis vel.npy --axes x y depth --dt 10 --cmap rainbow
 
 <img src="https://raw.githubusercontent.com/zzzzswh/gathervis/main/docs/images/ui_geometry.png" width="820" alt="Geometry 页：五条二维测线，金色星标为激活炮，其排列以蓝色高亮"/>
 
+### 像做处理的人那样看一个三维炮集
+
+一个三维炮集是一片接收线组成的 patch，不是一个立方体。处理机构的做法是把整个
+patch 放在同一张 `(道, 时间)` 面板上，改变的是道的**排列顺序**——Shot gathers
+页的 **sort** 选择器做的就是这件事：
+
+<img src="https://raw.githubusercontent.com/zzzzswh/gathervis/main/docs/images/sorts.png" width="820" alt="同一个三维炮集分别按采集道序、偏移距、方位角排列"/>
+
+*同一炮的三种看法：采集道序（橙线为接收线分界）、按偏移距、按方位角。*
+
+| 排序 | 用来看什么 |
+| --- | --- |
+| **as recorded** `(线号, 桩号)` | 采集道序，接收线首尾相接：N 条嵌套双曲线，顶点随 crossline 距离递进。几何错误、线序倒置、极性反转、死道全都会在这张图上跳出来。虚线标出接收线分界。 |
+| **receiver line** | 一次一条线——就是一张普通的二维炮记录——用来细看 patch 里看着不对劲的那条线。 |
+| **offset** | 全部道按源检距排列：整个 patch 塌成一条双曲线，用于动校、切除设计、速度。 |
+| **azimuth** | 按源到检波点的方位角（测量惯例，北 = 0），看方位特性以及 patch 到底覆盖了哪些方位。 |
+
+因为每一种排列都是同一张二维面板，分析窗、频谱、拾取、全分辨率导出在三维炮集上
+的用法和二维完全一样。拾取是按**道**存的，不是按屏幕列，所以换排序时拾取跟着道
+走；切到单条线时线外的拾取是隐藏而非删除，切回来还在。
+
+`offset` 和 `azimuth` 需要观测系统；`receiver line` 需要四维
+`(shot, recy, recx, time)` 数据——线结构在那里才是显式的。选择器只提供当前数据
+真正做得到的选项，二维测线且无观测系统时整个隐藏。**Shot volume** 页同时把当前
+炮显示为长方体，走同一条滤波/增益链——作为旁证，而不是入口。
+
+试一下：`python examples/quickstart.py patch`。
+
+### 采集质控：CMP 覆盖次数图
+
+**Fold** 页把每个炮检对的中点装箱计数：覆盖次数图上的一个洞，就是成像上的一个
+洞——而这在任何处理开始之前就能看见。
+
+<img src="https://raw.githubusercontent.com/zzzzswh/gathervis/main/docs/images/fold.png" width="520" alt="正交陆上三维的 CMP 覆盖次数图，中间满覆盖、边缘羽化"/>
+
+*一个正交陆上三维的覆盖次数（200 m 接收线上 25 m 桩距，200 m 炮线上 50 m 炮点）。
+固定满排列，所以覆盖次数在中间达到峰值、向边缘羽化。*
+
+网格默认取 in-line 半个桩距、cross-line 半个线距——也就是自然的 CMP 采样——两个
+方向都可以改，于是加粗网格能换来多少覆盖次数、又损失多少分辨率，一眼就能比出来。
+空 bin 画成背景色而不是色标最低端，所以有效区自己的形状能直接读出来。摘要行给出
+网格尺寸、有效 bin 数、最大/平均覆盖次数，以及道总数（它必须等于 `炮数 x 检波点数`，
+值得扫一眼当作几何校验和）。
+
+它**只用坐标**计算，所以在 100 GB 工区上和在玩具数据上代价一样，对一个没有任何道
+数据的裸 `Geometry` 也能算：
+
+```python
+from gathervis.survey import fold, default_bin
+grid = fold(ds.geometry)                     # 或 fold(geo, (12.5, 100.0))
+grid.counts                                  # (ny, nx) 每个 bin 的道数
+grid.nlive, grid.extent, grid.bin_of(x, y)
+```
+
+点击一个 bin 会选中它——这就是偏移距-方位玫瑰图要挂的钩子（路线图下一项）。
+
 ### 操作速查
 
 | 想做什么 | 怎么做 |
@@ -107,10 +163,14 @@ gathervis vel.npy --axes x y depth --dt 10 --cmap rainbow
 | 单轴伸缩 | 工具栏的 x-only / y-only 滚轮缩放工具 |
 | 调整三维长方体比例 | 每个维度各一条 stretch 滑条（1.0 居中，0.125×–8×） |
 | 跳到某一炮 | 拖炮号滑条、*go to shot* 输入，或在 Geometry 页点炮点 |
+| 重排三维炮集 | *sort* 选择器（采集道序 / 接收线 / 偏移距 / 方位角） |
+| 重新划分覆盖网格 | Fold 页的 *bin x* / *bin y*（*default bin* 恢复默认） |
+| 选中一个 CMP bin | 在覆盖次数图上点它 |
+| 逐条翻接收线 | *sort* 选为 receiver line，再拖线号滑条 |
 | 调谱面板大小 | Spectrum 块里的 *size*（S / M / L） |
 | 存图 | **⤓ full image** 按钮（原分辨率全图）· 工具栏 save 图标（当前视野，屏幕分辨率） |
 | 翻炮 | **←** / **→** |
-| 把眼前这个视图发给别人 | 直接复制地址栏 —— 炮号、色标、clip、极性、滤波、增益都写在 URL 里 |
+| 把眼前这个视图发给别人 | 直接复制地址栏 —— 炮号、排序、色标、clip、极性、滤波、增益都写在 URL 里 |
 
 同一份速查在应用里点 *? gestures* 按钮随时可看。快捷键只有左右方向键这一个，
 其余都是设一次就不动的控件，留在各自的控件上。光标在输入框里时方向键自动让位，
@@ -133,7 +193,7 @@ AGC 的测线。
 
 一键在变密度与变面积 wiggle 之间切换所有二维面板，*flip polarity* 复选框整体翻转
 极性（wiggle 充填瓣与变密度红蓝同步互换——SEG normal ↔ reverse）。色标：
-`seismic`、`gray`、`petrel`（锚点取自 cigvis）、`rainbow`，各配 `_r` 反转变体。
+`gray`（默认）、`seismic`、`petrel`（锚点取自 cigvis）、`rainbow`，各配 `_r` 反转变体。
 clip percentile 滑条设定色标范围——同时兼作 wiggle 增益。
 
 <img src="https://raw.githubusercontent.com/zzzzswh/gathervis/main/docs/images/display_modes.png" width="620" alt="变密度 vs wiggle"/>
@@ -216,14 +276,20 @@ save_png("shot007.png", a, cmap="gray")            # 或 display="wiggle"
 ## 语义（唯一要记住的规则）
 
 最后一维永远是纵轴：数据用 **time**，属性体用 **depth**。裸三维数组默认为
-`(shot, rec, time)` 并逐炮浏览；传 `view='slices'` 改为体切片查看，或用 `axes=`
-显式声明其他语义。`axes` 说明数组*是什么*，`view` 说明*怎么看*——二者独立。
+`(shot, rec, time)` 并逐炮浏览；四维数组默认为 `(shot, recy, recx, time)`，每炮
+一个三维炮记录。传 `view='slices'` 可把三维数组改为体切片查看，或用 `axes=`
+显式声明其他语义。`axes` 说明数组*是什么*，`view` 说明*怎么看*，`sort`（在应用里）
+说明*按什么顺序排*——三者独立。
 
 ## 设计笔记
 
 * **处处懒加载。** memmap 数据；浏览一炮只读那一炮的字节；切片只读那一片；
-  滤波与谱分析只作用于当前显示的道集。
+  滤波与谱分析只作用于当前显示的道集。按采集道序或按接收线排序同样是懒的
+  （一次 reshape、一次切片）；只有按偏移距/方位角排序需要把这一炮实体化——
+  是一炮，不是整个文件。
 * **廉价传输格式。** 面板在服务端按像素预算跨步抽稀并量化为 uint8 后才上线。
+* **排序不是处理。** 排序返回的是这一炮自己的道、只是换了顺序，滤波/增益链再
+  作用于结果——于是二维和三维炮集共用同一条处理路径。
 * **两个渲染原语。** 二维面板是 bokeh 图像 / wiggle；数据体是 plotly WebGL
   切片平面。二者共用同一条抽稀 → uint8 管线。
 * **实时拖动。** 滑条拖动中实时更新；三维相机、拉伸倍率、已画的窗在任何更新后
@@ -232,11 +298,34 @@ save_png("shot007.png", a, cmap="gray")            # 或 display="wiggle"
 
 ## 路线图
 
+**三维采集质控**（剩余）：炮记录时间切片面积图 · 逐 bin 的偏移距-方位玫瑰图
+（三维炮集排序、CMP 覆盖次数图：已完成）。
 **M2**（剩余）：联动对比面板 · 客户端体缓存（cigvis 级切片拖动手感）
 （AGC / 道均衡 / CuPy：已完成）。**M3**（剩余）：道头索引、按任意键抽道集
 （SEG-Y 导入：已完成）。**M4**（剩余）：共偏移距/时间切片、NMO 预览
 （同相轴拾取：已完成）。完整规划见 [`docs/plan.md`](https://github.com/zzzzswh/gathervis/blob/main/docs/plan.md)。
 *以及任何你提出的需求——见页首。*
+
+## 相关项目
+
+### cigvis
+
+[**cigvis**](https://github.com/JintaoLee-Roger/cigvis) —— 我导师的作品，也是当你的
+数据是**数据体**而不是**道集**时应该用的工具。它可视化三维地震数据以及叠加在其
+之上的一切——标签、断层、RGT、层位面、井轨迹与测井曲线、三维地质体——同时也支持
+二维与一维数据；三维用 vispy，二维/一维用 matplotlib，Jupyter 环境用 plotly，另有
+viser 与 OpenVDS 后端可选。
+
+gathervis 不打算和它竞争，两者按数据类型分工：
+
+| | gathervis | cigvis |
+| --- | --- | --- |
+| 数据 | 叠前道集、观测系统 | 数据体 + 解释成果 |
+| 典型用途 | 逐炮浏览、QC、滤波、频谱、拾取 | 三维渲染、层位、断层、井、地质体 |
+| 前端 | 纯浏览器（Panel / Bokeh），一个端口 | 桌面（vispy）+ plotly / viser |
+
+gathervis 的 **Volume slices** 页签只是为了快速看一眼道集所在的那个立方体——刻意
+只有一个长方体、三个切片面，没有别的。一旦需要真正的体解释，请用 cigvis。
 
 ## 致谢
 

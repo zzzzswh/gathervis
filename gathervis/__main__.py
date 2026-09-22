@@ -27,7 +27,7 @@ def _parser():
     p.add_argument("--geom", help=".npz with 'src', 'rec' (and optionally 'dt')")
     p.add_argument("--name", default=None,
                    help="description shown in the info card")
-    p.add_argument("--cmap", default="seismic")
+    p.add_argument("--cmap", default="gray")
     p.add_argument("--port", type=int, default=8080,
                    help="0 = auto-pick a free port")
     p.add_argument("--address", default="127.0.0.1")

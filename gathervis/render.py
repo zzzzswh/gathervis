@@ -27,10 +27,10 @@ __all__ = ["CMAPS", "palette_hex", "palette_rgb", "raster_size", "auto_px",
 # variable-density colormaps: (positions, rgb anchors). 'petrel' anchors are
 # taken from cigvis's customcmap (MIT), the rest are ours.
 PALETTES = {
+    "gray": ([0.0, 1.0], [[0.0, 0.0, 0.0], [1.0, 1.0, 1.0]]),
     "seismic": ([0.0, 0.25, 0.5, 0.75, 1.0],          # blue - white - red
                 [[0.0, 0.0, 0.45], [0.1, 0.3, 1.0], [1.0, 1.0, 1.0],
                  [1.0, 0.25, 0.1], [0.45, 0.0, 0.0]]),
-    "gray": ([0.0, 1.0], [[0.0, 0.0, 0.0], [1.0, 1.0, 1.0]]),
     "petrel": ([0.0, 0.33, 0.4, 0.5, 0.6, 0.67, 1.0],  # cyan-blue-gray-red-yellow
                [[0.631, 1.0, 1.0], [0.0, 0.0, 0.749],
                 [0.302, 0.302, 0.302], [0.8, 0.8, 0.8],
@@ -94,7 +94,7 @@ def raster_size(nx: int, nt: int, display: str = "density", px_trace: int = 0,
 # ---------------------------------------------------------------------------
 # rasterizers
 # ---------------------------------------------------------------------------
-def render_gather(arr2d, clim, display: str = "density", cmap: str = "seismic",
+def render_gather(arr2d, clim, display: str = "density", cmap: str = "gray",
                   px_trace: int = 0, px_sample: int = 0,
                   flip_y: bool = True) -> np.ndarray:
     """Render a processed (nx, nt) gather as an (h, w, 3) uint8 RGB raster.
@@ -113,7 +113,7 @@ def render_gather(arr2d, clim, display: str = "density", cmap: str = "seismic",
                           px_sample=px_sample, flip_y=flip_y)
 
 
-def render_density(arr2d, clim, cmap: str = "seismic", px_trace: int = 0,
+def render_density(arr2d, clim, cmap: str = "gray", px_trace: int = 0,
                    px_sample: int = 0, flip_y: bool = True) -> np.ndarray:
     """Variable-density raster: the screen image without the decimation.
 
@@ -256,7 +256,7 @@ def png_bytes(rgb: np.ndarray, level: int = None) -> bytes:
 
 
 def save_png(path, arr2d, clim=None, display: str = "density",
-             cmap: str = "seismic", perc: float = 98.0, px_trace: int = 0,
+             cmap: str = "gray", perc: float = 98.0, px_trace: int = 0,
              px_sample: int = 0, flip_y: bool = True, level: int = None):
     """Write a gather straight to a full-resolution PNG, no viewer involved.
 

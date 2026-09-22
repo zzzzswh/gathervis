@@ -21,15 +21,18 @@ import itertools
 import numpy as np
 import panel as pn
 from bokeh.events import DocumentReady
-from bokeh.models import (BoxEditTool, ColumnDataSource, CrosshairTool,
-                          CustomJS, Div, LinearColorMapper, PointDrawTool,
-                          PolyDrawTool, TapTool, TextInput)
+from bokeh.models import (BoxEditTool, ColorBar, ColumnDataSource,
+                          CrosshairTool, CustomJS, Div, LabelSet,
+                          LinearColorMapper, PointDrawTool, PolyDrawTool,
+                          TapTool, TextInput)
 from bokeh.plotting import figure
 
 from .core import Gathers, from_array, from_file
 from .process import (robust_clim, decimate, quantize, bandpass,
                       agc, trace_balance, pick_first_breaks)
 from . import render as _render
+from . import sortkeys as _sort
+from . import survey as _survey
 from .render import (CMAPS as _CMAPS, palette_hex as _palette, png_bytes,
                      raster_size, render_gather)
 
@@ -154,6 +157,28 @@ if (d["image"] != null && d["image"].length > 0) {
     const v = lo + (q / 255.0) * (hi - lo);
     txt += " &nbsp;&nbsp; amp " + v.toPrecision(3);
   }
+}
+div.text = txt;
+"""
+
+# Fold is an integer count on a bin grid, so the readout wants the bin index
+# and the count, not an interpolated amplitude.
+_FOLD_READOUT_JS = """
+const x = cb_obj.x, y = cb_obj.y;
+const d = src.data;
+if (x == null || y == null || d["image"] == null || d["image"].length == 0) {
+  div.text = "&nbsp;"; return;
+}
+const img = d["image"][0];
+const nyr = img.shape[0], nxc = img.shape[1];
+const x0 = d["x"][0], y0 = d["y"][0], dw = d["dw"][0], dh = d["dh"][0];
+const j = Math.floor((x - x0) / dw * nxc);
+const i = Math.floor((y - y0) / dh * nyr);
+let txt = "x " + x.toFixed(1) + " &nbsp;&nbsp; y " + y.toFixed(1);
+if (i >= 0 && i < nyr && j >= 0 && j < nxc) {
+  const v = img[i * nxc + j];
+  txt += " &nbsp;&nbsp; bin (" + j + ", " + i + ")"
+       + " &nbsp;&nbsp; fold " + (isNaN(v) ? "0" : v.toFixed(0));
 }
 div.text = txt;
 """
@@ -426,7 +451,7 @@ class ImagePane:
     """
 
     def __init__(self, xlabel="trace", ylabel="time (s)", flip_y=True,
-                 cmap="seismic", height=520, match_aspect=False):
+                 cmap="gray", height=520, match_aspect=False):
         self.mapper = LinearColorMapper(palette=_palette(cmap), low=0, high=255)
         self.cds = ColumnDataSource(dict(image=[], x=[], y=[], dw=[], dh=[]))
         self.display = "density"
@@ -449,6 +474,19 @@ class ImagePane:
         self._r_wig = fig.multi_line(xs="xs", ys="ys", source=self._cds_wig,
                                      line_color="#111111", line_width=0.8,
                                      visible=False)
+        # Receiver-line separators for an 'as recorded' 3-D shot: N lines end
+        # to end read as N hyperbolas, and the eye needs to know where one
+        # line stops. Drawn as data-space segments (not Spans) so they are one
+        # glyph with a CDS, updated like everything else on this pane.
+        self._cds_sep = ColumnDataSource(dict(xs=[], ys=[]))
+        fig.multi_line(xs="xs", ys="ys", source=self._cds_sep,
+                       line_color="#5f6368", line_width=1, line_dash="dashed",
+                       line_alpha=0.55)
+        self._cds_seplab = ColumnDataSource(dict(x=[], y=[], text=[]))
+        fig.add_layout(LabelSet(x="x", y="y", text="text",
+                                source=self._cds_seplab,
+                                text_font_size="9px", text_color="#5f6368",
+                                text_align="center", y_offset=3))
         fig.y_range.flipped = bool(flip_y)
         fig.x_range.range_padding = fig.y_range.range_padding = 0
         fig.toolbar.logo = None
@@ -535,6 +573,30 @@ class ImagePane:
         else:
             self._update_image(arr2d, clim, x0, dx, y0, dy)
         self._sync_download()
+
+    def set_separators(self, xs, labels=None, label_x=None):
+        """Dashed verticals at ``xs``, spanning the panel; ``labels`` (drawn
+        at ``label_x``, defaulting to ``xs``) annotate the blocks between.
+
+        Call it after ``update``: the segments take their vertical extent
+        from whatever the panel is currently showing.
+        """
+        xs = np.asarray(xs, dtype=float).ravel()
+        if self._last is None or not xs.size:
+            self._cds_sep.data = dict(xs=[], ys=[])
+            self._cds_seplab.data = dict(x=[], y=[], text=[])
+            return
+        arr, _clim, _x0, _dx, y0, dy = self._last
+        y1 = y0 + dy * arr.shape[1]
+        self._cds_sep.data = dict(xs=[[x, x] for x in xs],
+                                  ys=[[y0, y1] for _ in xs])
+        if labels is None:
+            self._cds_seplab.data = dict(x=[], y=[], text=[])
+            return
+        lx = xs if label_x is None else np.asarray(label_x, dtype=float).ravel()
+        self._cds_seplab.data = dict(x=[float(v) for v in lx],
+                                     y=[float(y0)] * len(lx),
+                                     text=[str(t) for t in labels])
 
     # -- full-resolution download -------------------------------------------
     # What the browser gets is stride-decimated to MAX_PX and, in wiggle mode,
@@ -998,7 +1060,8 @@ class PickTool:
         pane.figure.add_tools(PointDrawTool(renderers=[r],
                                             description="pick events"))
         self.cds.on_change("data", lambda a, o, n: self._sync_line())
-        self._store = {}                    # shot index -> (xs, ys)
+        self._store = {}          # shot index -> (trace indices, times)
+        self._order = None        # column -> trace; None = the two coincide
         self._shot = 0
         self.w_export = pn.widgets.FileDownload(callback=self._export,
                                                 filename="picks.csv",
@@ -1099,9 +1162,70 @@ class PickTool:
         o = np.argsort(x)
         self._cds_line.data = dict(x=x[o].tolist(), y=y[o].tolist())
 
+    # -- trace <-> column ---------------------------------------------------
+    # Picks are stored against the *trace* they belong to, in the dataset's
+    # own flat numbering, never against the screen column -- re-sorting a 3-D
+    # shot moves every column, and a first break belongs to a geophone, not
+    # to a position on a panel. ``order[column] = trace``; with no order set
+    # (a 2-D line, which has only one arrangement) the two coincide.
+    def set_order(self, order):
+        """Declare which trace each column currently shows.
+
+        Called by the browser after a re-sort: the picks on display are
+        banked against their traces under the old order and laid out again
+        under the new one, so picks on traces the new arrangement leaves out
+        are hidden rather than lost.
+        """
+        order = None if order is None else np.asarray(order, dtype=np.int64)
+        if self._order is not None and order is not None \
+                and np.array_equal(self._order, order):
+            return
+        self._flush()                       # bank under the old order
+        self._order = order
+        self._load()
+
+    def _trace_of(self, x) -> int:
+        i = int(round(float(x)))
+        if self._order is None:
+            return i
+        return int(self._order[i]) if 0 <= i < self._order.shape[0] else -1
+
+    def _columns_of(self, traces):
+        """Where each stored trace sits now; -1 when it is not on screen."""
+        traces = np.asarray(traces, dtype=float)
+        if self._order is None:
+            return traces
+        n = int(self._order.max(initial=-1)) + 1
+        where = np.full(n, -1, dtype=np.int64)
+        where[self._order] = np.arange(self._order.shape[0])
+        idx = np.rint(traces).astype(np.int64)
+        out = np.where((idx >= 0) & (idx < n), where[np.clip(idx, 0, n - 1)], -1)
+        return out.astype(float)
+
+    def _load(self):
+        """Put this shot's stored picks on screen under the current order."""
+        traces, times = self._store.get(self._shot, ([], []))
+        cols = self._columns_of(traces)
+        keep = cols >= 0
+        self.cds.data = dict(x=cols[keep].tolist(),
+                             y=np.asarray(times, dtype=float)[keep].tolist())
+
     def _flush(self):
-        self._store[self._shot] = (list(self.cds.data["x"]),
-                                   list(self.cds.data["y"]))
+        """Bank what is on screen, plus whatever this shot has off screen."""
+        shown = {self._trace_of(x): float(y)
+                 for x, y in zip(self.cds.data["x"], self.cds.data["y"])}
+        shown.pop(-1, None)
+        traces, times = self._store.get(self._shot, ([], []))
+        cols = self._columns_of(traces)
+        merged = {int(t): float(v)                      # off-screen picks stay
+                  for t, v, c in zip(traces, times, cols) if c < 0}
+        merged.update(shown)
+        if merged:
+            items = sorted(merged.items())
+            self._store[self._shot] = ([float(t) for t, _ in items],
+                                       [v for _, v in items])
+        else:
+            self._store.pop(self._shot, None)
 
     def set_shot(self, i: int):
         """Swap the displayed picks to shot ``i`` (saving the current ones)."""
@@ -1109,9 +1233,8 @@ class PickTool:
         if i == self._shot:
             return
         self._flush()
-        xs, ys = self._store.get(i, ([], []))
         self._shot = i
-        self.cds.data = dict(x=list(xs), y=list(ys))
+        self._load()
 
     def clear_shot(self):
         """Remove the picks of the current shot."""
@@ -1158,9 +1281,8 @@ class PickTool:
             store.setdefault(s, ([], []))
             store[s][0].append(x)
             store[s][1].append(y)
-        self._store = store
-        xs, ys = store.get(self._shot, ([], []))
-        self.cds.data = dict(x=list(xs), y=list(ys))
+        self._store = store          # the CSV's traces are trace indices,
+        self._load()                 # so they lay out under the current sort
 
     def picking_card(self, sidebar=False):
         """Manual event picking: snap refinement + pick I/O."""
@@ -1225,7 +1347,7 @@ def _display_controls(state, panes, redraw, cmap, perc):
 # ---------------------------------------------------------------------------
 # views
 # ---------------------------------------------------------------------------
-def view_gather(arr2d, dt=1.0, t0=0.0, cmap="seismic", perc=98.0, title=""):
+def view_gather(arr2d, dt=1.0, t0=0.0, cmap="gray", perc=98.0, title=""):
     """Single (trace, time) panel."""
     _ensure_ext()
     state = {"sample": np.asarray(arr2d), "clim": None}
@@ -1277,7 +1399,7 @@ class VolumeView3D:
     _LIGHT = dict(ambient=1.0, diffuse=0.0, specular=0.0, fresnel=0.0)
 
     def __init__(self, vol, names=("recy", "recx"), dt=1.0, t0=0.0,
-                 cmap="seismic", perc=98.0, clim=None, vertical="time (s)",
+                 cmap="gray", perc=98.0, clim=None, vertical="time (s)",
                  symmetric=True):
         _ensure_ext()
         self.vol, self.names, self.dt, self.t0 = vol, names, dt, t0
@@ -1461,44 +1583,64 @@ class VolumeView3D:
 
 
 class ShotBrowser:
-    """Slider over the shot axis; each shot is a 2-D panel or a 3-D cuboid view.
+    """Slider over the shot axis; each shot is one 2-D ``(trace, time)`` panel.
+
+    A 3-D shot is a patch of receiver lines, and the panel shows all of it:
+    the *sort* selector decides the order the patch's traces are laid out in
+    (acquisition order, one receiver line, by offset, by azimuth -- see
+    ``gathervis.sortkeys``). Keeping every arrangement on the same 2-D panel
+    is what lets the windows, spectra, picking and full-image export work on
+    3-D shots at all.
 
     ``state`` is a shared dict holding 'clim' (and 'sample'), owned by the
     Workspace so all views stay consistent.
     """
 
-    def __init__(self, g: Gathers, state: dict, cmap="seismic",
+    def __init__(self, g: Gathers, state: dict, cmap="gray",
                  tools="sidebar"):
         _ensure_ext()
         self.g, self.state = g, state
-        self._per_shot_3d = g.data.ndim == 4
         self._tools_sidebar = tools == "sidebar"
         self._help = None
-        self.wt = None
         self._stem = _slug(g.name)
-        if self._per_shot_3d:
-            self.sv = VolumeView3D(g.shot(0), names=g.axes[1:3], dt=g.dt,
-                                   t0=g.t0, cmap=cmap, clim=state["clim"])
-            self.panes = [self.sv]     # exposes set_cmap like an ImagePane
-        else:
-            self.pane = ImagePane(xlabel=g.axes[1], cmap=cmap)
-            self.panes = [self.pane]
-            self.wt = WindowTool(self.pane)   # windows + spectra + export
-            self.pt = PickTool(self.pane)     # per-shot event picking
+        self._order = None                 # trace order currently displayed
+
+        self.sorts = _sort.available(g)
+        self.pane = ImagePane(xlabel="trace", cmap=cmap)
+        self.panes = [self.pane]
+        self.wt = WindowTool(self.pane)    # windows + spectra + export
+        self.pt = PickTool(self.pane)      # per-shot event picking
 
         self.w_shot = pn.widgets.IntSlider(name="shot", start=0, end=g.nshot - 1,
                                            value=0, sizing_mode="stretch_width")
         self.w_jump = pn.widgets.IntInput(name="go to shot", start=0,
                                           end=g.nshot - 1, value=0, width=110)
+        # Only worth a selector where there is more than one way to sort: a
+        # 2-D line without geometry has exactly one.
+        self.w_sort = pn.widgets.Select(
+            name="sort", options=list(self.sorts), value=_sort.AS_RECORDED,
+            width=180, visible=len(self.sorts) > 1,
+            description="the order this shot's traces are laid out in")
+        nl = _sort.nlines(g)
+        self.w_line = pn.widgets.IntSlider(
+            name="receiver line", start=0, end=max(nl - 1, 0), value=0,
+            width=200, visible=False)
+
         # live shot flipping while dragging; typing a number jumps there
         self.w_shot.param.watch(lambda e: self._sync(e.new), "value")
         self.w_jump.param.watch(lambda e: self.set_shot(e.new), "value")
-        self.on_shot_change = None      # hook: called with the new shot index
+        self.w_sort.param.watch(lambda e: self._on_sort(e.new), "value")
+        self.w_line.param.watch(lambda e: self.redraw(), "value")
+        self.on_shot_change = []        # hooks: called with the new shot index
         self.redraw()
 
     @property
     def ishot(self) -> int:
         return int(self.w_shot.value)
+
+    @property
+    def sort(self) -> str:
+        return str(self.w_sort.value)
 
     def set_shot(self, i: int):
         i = max(0, min(int(i), self.g.nshot - 1))
@@ -1509,40 +1651,61 @@ class ShotBrowser:
         self.w_jump.value = int(i)            # equal values don't re-trigger
         self.redraw()
 
+    def _on_sort(self, kind: str):
+        self.w_line.visible = kind == _sort.RECEIVER_LINE
+        self.redraw()
+
     def redraw(self):
-        arr = self.g.shot(self.ishot)          # reads only this shot's bytes
-        arr, clim = _process_gather(arr, self.g.dt, self.state)
-        if self._per_shot_3d:
-            self.sv.clim = clim
-            self.sv.set_volume(arr)
-        else:
-            self.pane.update(arr, clim, y0=self.g.t0, dy=self.g.dt)
-        if self.wt is not None:
-            self.wt.refresh()                 # keep spectra in sync
-            self.pt.set_shot(self.ishot)      # picks follow the shot
-            self.pane.w_download.filename = \
-                f"{self._stem}_shot{self.ishot:04d}.png"
-        if self.on_shot_change is not None:
-            self.on_shot_change(self.ishot)
+        # reads only this shot's bytes, in the requested order
+        panel = _sort.arrange(self.g, self.ishot, self.sort,
+                              line=int(self.w_line.value))
+        arr, clim = _process_gather(panel.data, self.g.dt, self.state)
+        self.pane.figure.xaxis.axis_label = panel.xlabel
+        self.pane.update(arr, clim, y0=self.g.t0, dy=self.g.dt)
+        self._draw_separators(panel)
+        self.pt.set_shot(self.ishot)      # picks follow the shot
+        self.pt.set_order(panel.order)    # ... and the trace order
+        self._order = panel.order
+        self.wt.refresh()                 # keep spectra in sync
+        self.pane.w_download.filename = self._filename()
+        for hook in self.on_shot_change:
+            hook(self.ishot)
+
+    def _draw_separators(self, panel):
+        """Mark where one receiver line ends and the next begins."""
+        if not len(panel.bounds):
+            self.pane.set_separators(())
+            return
+        edges = np.concatenate([[-0.5], panel.bounds,
+                                [panel.data.shape[0] - 0.5]])
+        centers = 0.5 * (edges[:-1] + edges[1:])
+        self.pane.set_separators(panel.bounds,
+                                 labels=[f"L{i}" for i in range(len(centers))],
+                                 label_x=centers)
+
+    def _filename(self) -> str:
+        tag = {_sort.AS_RECORDED: "", _sort.OFFSET: "_offset",
+               _sort.AZIMUTH: "_azimuth"}.get(
+                   self.sort, f"_line{int(self.w_line.value):02d}")
+        return f"{self._stem}_shot{self.ishot:04d}{tag}.png"
 
     def tool_cards(self):
-        """Window / Spectrum / picking cards, for hosting in the sidebar.
-
-        Empty for 4-D data, which browses each shot as a 3-D cuboid and has
-        no 2-D panel to draw windows or picks on.
-        """
-        if self.wt is None:
-            return []
+        """Window / Spectrum / picking cards, for hosting in the sidebar."""
         if self._help is None:
             self._help = _gesture_help()
         btn, body = self._help
         return [self.wt.window_card(True), self.wt.spectrum_card(True),
                 self.pt.picking_card(True), self.pt.fb_card(True), btn, body]
 
+    def controls(self):
+        """Shot slider + jump box, and the sort selector where it applies."""
+        row = pn.Row(self.w_shot, self.w_jump)
+        if len(self.sorts) > 1:
+            return pn.Column(row, pn.Row(self.w_sort, self.w_line))
+        return row
+
     def panel(self):
-        if self._per_shot_3d:
-            body = self.sv.panel()
-        elif self._tools_sidebar:
+        if self._tools_sidebar:
             # cards live in the sidebar; only the figure and the spectra
             # it produces stay in the main column
             body = self.pane.frame(self.wt.figures())
@@ -1557,8 +1720,8 @@ class ShotBrowser:
                            self.pt.picking_card(),
                            self.pt.fb_card(), help_btn),
                 help_body)
-        return pn.Column(pn.Row(self.w_shot, self.w_jump),
-                         body, sizing_mode="stretch_width")
+        return pn.Column(self.controls(), body, sizing_mode="stretch_width")
+
 
 
 class LayoutMap:
@@ -1602,10 +1765,126 @@ class LayoutMap:
         self._cds_asrc.data = dict(x=[self.geo.src[i, 0]], y=[self.geo.src[i, 1]])
 
 
+class FoldMap:
+    """CMP fold over the survey: how many traces image each bin.
+
+    The first thing anyone looks at after loading geometry, because a hole in
+    the fold map is a hole in the image and it is visible here long before
+    anything has been processed. Empty bins are drawn as background rather
+    than as the bottom of the colour scale, so the live area's own shape --
+    the tapered edges, the gaps -- reads directly.
+
+    Computed from coordinates only (see ``gathervis.survey``), so it costs the
+    same on a 100 GB survey as on a toy one.
+    """
+
+    _EMPTY = "#eceff1"
+
+    def __init__(self, geo, cmap="rainbow", height=520):
+        _ensure_ext()
+        self.geo = geo
+        self.on_pick = None          # hook: called with (ix, iy) of a tapped bin
+        self.grid = None
+        dx, dy = _survey.default_bin(geo)
+        self.w_dx = pn.widgets.FloatInput(name="bin x", value=round(dx, 4),
+                                          start=0.0, width=110)
+        self.w_dy = pn.widgets.FloatInput(name="bin y", value=round(dy, 4),
+                                          start=0.0, width=110)
+        self.w_reset = pn.widgets.Button(name="default bin", width=110,
+                                         button_type="light", margin=(18, 3))
+        self.mapper = LinearColorMapper(palette=_palette(cmap), low=1, high=2,
+                                        nan_color=self._EMPTY)
+        fig = figure(height=height, sizing_mode="stretch_width",
+                     match_aspect=True, x_axis_label="x", y_axis_label="y",
+                     tools="pan,wheel_zoom,xwheel_zoom,ywheel_zoom,"
+                           "box_zoom,reset,save,tap",
+                     active_scroll="wheel_zoom")
+        fig.toolbar.logo = None
+        fig.background_fill_color = self._EMPTY
+        fig.x_range.range_padding = fig.y_range.range_padding = 0
+        self.cds = ColumnDataSource(dict(image=[], x=[], y=[], dw=[], dh=[]))
+        fig.image(image="image", x="x", y="y", dw="dw", dh="dh",
+                  source=self.cds, color_mapper=self.mapper)
+        fig.add_layout(ColorBar(color_mapper=self.mapper, title="fold",
+                                width=10, padding=6), "right")
+        self._cds_pick = ColumnDataSource(dict(x=[], y=[], w=[], h=[]))
+        fig.rect(x="x", y="y", width="w", height="h", source=self._cds_pick,
+                 fill_alpha=0, line_color="#111111", line_width=2)
+        self.readout = Div(text="&nbsp;", height=18,
+                           styles={"color": "#5f6368", "font-size": "12px",
+                                   "font-family": "monospace"})
+        fig.js_on_event("mousemove", CustomJS(
+            args=dict(src=self.cds, div=self.readout), code=_FOLD_READOUT_JS))
+        fig.js_on_event("mouseleave", CustomJS(
+            args=dict(div=self.readout), code='div.text = "&nbsp;";'))
+        fig.on_event("tap", self._on_tap)
+        self.figure = fig
+        self.summary = pn.pane.HTML("", sizing_mode="stretch_width")
+        self.w_dx.param.watch(lambda e: self.compute(), "value")
+        self.w_dy.param.watch(lambda e: self.compute(), "value")
+        self.w_reset.on_click(lambda e: self._defaults())
+        self.compute()
+
+    def _defaults(self):
+        dx, dy = _survey.default_bin(self.geo)
+        self.w_dx.value, self.w_dy.value = round(dx, 4), round(dy, 4)
+
+    def compute(self):
+        """Re-bin at the current bin size; a bad size is reported, not raised."""
+        try:
+            grid = _survey.fold(self.geo,
+                                (float(self.w_dx.value), float(self.w_dy.value)))
+        except ValueError as e:
+            self.summary.object = (
+                f"<div style='font-size:12px;color:#b45309'>{e}</div>")
+            return
+        self.grid = grid
+        img = grid.counts.astype(np.float32)
+        img[img == 0] = np.nan                    # empty bins: background
+        x0, y0, w, h = grid.extent
+        self.mapper.low, self.mapper.high = 1, max(int(grid.counts.max()), 1)
+        self.cds.data = dict(image=[img], x=[x0], y=[y0], dw=[w], dh=[h])
+        self._cds_pick.data = dict(x=[], y=[], w=[], h=[])
+        live = grid.counts[grid.counts > 0]
+        ny, nx = grid.shape
+        self.summary.object = (
+            "<div style='font-size:12px;color:#5f6368'>"
+            f"grid <b>{nx} x {ny}</b> bins of "
+            f"{grid.dx:g} x {grid.dy:g} &nbsp;·&nbsp; "
+            f"<b>{grid.nlive}</b> live &nbsp;·&nbsp; fold "
+            f"max <b>{int(live.max()) if live.size else 0}</b>, "
+            f"mean <b>{live.mean():.1f}</b> &nbsp;·&nbsp; "
+            f"{int(grid.counts.sum())} traces</div>")
+
+    def _on_tap(self, event):
+        if self.grid is None:
+            return
+        hit = self.grid.bin_of(event.x, event.y)
+        if hit is None:
+            return
+        self.set_active(*hit)
+        if self.on_pick is not None:
+            self.on_pick(*hit)
+
+    def set_active(self, ix: int, iy: int):
+        """Outline one bin (the one a rose diagram would be drawn for)."""
+        g = self.grid
+        self._cds_pick.data = dict(x=[g.x0 + (ix + 0.5) * g.dx],
+                                   y=[g.y0 + (iy + 0.5) * g.dy],
+                                   w=[g.dx], h=[g.dy])
+
+    def panel(self):
+        return pn.Column(pn.Row(self.w_dx, self.w_dy, self.w_reset),
+                         self.summary, self.figure, self.readout,
+                         sizing_mode="stretch_width")
+
+
 def _survey_kind(g: Gathers) -> str:
     if "shot" in g.axes:
-        return ("3-D seismic (per-shot 3-D gathers)" if g.data.ndim == 4
-                else "2-D seismic line")
+        if g.data.ndim == 4:
+            return (f"3-D seismic ({_sort.nlines(g)} receiver lines x "
+                    f"{_sort.line_length(g)} stations per shot)")
+        return "2-D seismic line"
     if g.axes[-1] == "depth":
         return "property volume (depth)"
     return "single gather" if g.data.ndim == 2 else "volume"
@@ -1641,7 +1920,7 @@ class Workspace:
     layout map selects that shot and jumps to the shot-gather tab.
     """
 
-    def __init__(self, g: Gathers, cmap="seismic", perc=98.0, view=None,
+    def __init__(self, g: Gathers, cmap="gray", perc=98.0, view=None,
                  tools="sidebar", keys=True):
         _ensure_ext()
         self.g = g
@@ -1663,9 +1942,8 @@ class Workspace:
             self.browser = ShotBrowser(g, self.state, cmap=cmap, tools=tools)
             self._panes += self.browser.panes
             self._redraws.append(self.browser.redraw)
-            label = "Shot gathers" + (" (3-D)" if g.data.ndim == 4 else "")
             self._shot_tab = len(tabs)
-            tabs.append((label, self.browser.panel()))
+            tabs.append(("Shot gathers", self.browser.panel()))
             if self._tools_sidebar:
                 cards = self.browser.tool_cards()
                 if cards:
@@ -1676,12 +1954,32 @@ class Workspace:
         if g.geometry is not None:
             self.map = LayoutMap(g.geometry)
             self.map.on_pick = self._pick_shot
-            self.browser.on_shot_change = self.map.set_active
+            self.browser.on_shot_change.append(self.map.set_active)
             self.map.set_active(self.browser.ishot)
             tabs.append(("Geometry", pn.Column(self.map.figure,
                                                sizing_mode="stretch_width")))
 
-        # -- tab 3: volume cuboid + slice planes (3-D data) -----------------
+        # -- tab 3: CMP fold -----------------------------------------------
+        # Geometry only, so it costs the same whatever the data weighs.
+        if g.geometry is not None:
+            self.fold = FoldMap(g.geometry)
+            tabs.append(("Fold", self.fold.panel()))
+
+        # -- tab 4: the current shot as a cuboid (4-D data) ----------------
+        # The 2-D panel above is the working view; this is the one place a
+        # single 3-D shot is worth looking at as a volume, so it follows the
+        # shot slider rather than owning one.
+        if g.data.ndim == 4:
+            self.shot_volume = VolumeView3D(g.shot(0), names=g.axes[1:3],
+                                            dt=g.dt, t0=g.t0, cmap=cmap,
+                                            clim=self.state["clim"])
+            self._panes.append(self.shot_volume)
+            self._redraws.append(self._redraw_shot_volume)
+            self.browser.on_shot_change.append(
+                lambda _i: self._redraw_shot_volume())
+            tabs.append(("Shot volume", self.shot_volume.panel()))
+
+        # -- tab 5: volume cuboid + slice planes (3-D data) -----------------
         if g.data.ndim == 3:
             vlab = "depth (m)" if g.axes[-1] == "depth" else "time (s)"
             self.slices = VolumeView3D(g.data, names=tuple(g.axes[:-1]),
@@ -1806,6 +2104,10 @@ class Workspace:
         pairs += [(w, f"f{i + 1}") for i, w in enumerate(self._w_f)]
         if getattr(self, "browser", None) is not None:
             pairs.append((self.browser.w_shot, "shot"))
+            if len(self.browser.sorts) > 1:
+                pairs.append((self.browser.w_sort, "sort"))
+                if _sort.RECEIVER_LINE in self.browser.sorts:
+                    pairs.append((self.browser.w_line, "recline"))
         pairs.append((self.tabs, "tab"))
 
         # A hand-edited or stale link can carry a value this build cannot use
@@ -1844,6 +2146,15 @@ class Workspace:
         self._pane2d.update(arr, clim, y0=self.g.t0, dy=self.g.dt)
         if hasattr(self, "_wt2d"):
             self._wt2d.refresh()
+
+    def _redraw_shot_volume(self):
+        """Keep the 4-D cuboid tab on the same filter/gain/polarity chain as
+        the 2-D panel. One shot is small enough to process whole, so unlike
+        the whole-line volume tab this needs no size guard."""
+        arr, clim = _process_gather(self.g.shot(self.browser.ishot),
+                                    self.g.dt, self.state)
+        self.shot_volume.clim = clim
+        self.shot_volume.set_volume(np.asarray(arr))
 
     def _redraw_slices(self):
         """The volume tab follows the filter/gain/flip chain too: volumes up
@@ -2048,7 +2359,7 @@ def _banner(port):
 
 
 def show(obj, axes=None, view=None, dt=1.0, t0=0.0, src=None, rec=None,
-         shape=None, dtype="float32", name=None, cmap="seismic", perc=98.0,
+         shape=None, dtype="float32", name=None, cmap="gray", perc=98.0,
          port=None, address="127.0.0.1", title="gathervis", verbose=True,
          tools="sidebar", keys=None):
     """Open a viewer for ``obj``.

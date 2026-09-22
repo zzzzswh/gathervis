@@ -104,6 +104,73 @@ that shot and jumps back to its gather, with the active spread highlighted:
 
 <img src="https://raw.githubusercontent.com/zzzzswh/gathervis/main/docs/images/ui_geometry.png" width="820" alt="Geometry tab: five 2-D lines, active shot starred with its spread highlighted"/>
 
+### Look at a 3-D shot the way a processor does
+
+A 3-D shot is a patch of receiver lines, not a cube. Processing shops put the
+whole patch on one `(trace, time)` panel and change the *order* the traces are
+laid out in — so that is what the **sort** selector on the Shot gathers tab
+does:
+
+<img src="https://raw.githubusercontent.com/zzzzswh/gathervis/main/docs/images/sorts.png" width="820" alt="the same 3-D shot sorted as recorded, by offset and by azimuth"/>
+
+*The same shot three ways: as recorded (receiver-line breaks in orange), by
+offset, by azimuth.*
+
+| sort | what it is for |
+| --- | --- |
+| **as recorded** `(line, station)` | Acquisition order, receiver lines end to end: N nested hyperbolas whose apices step with cross-line distance. Geometry errors, reversed lines, polarity flips and dead channels all jump out of this one. Dashed separators mark the line boundaries. |
+| **receiver line** | One line at a time — a plain 2-D shot record — for detailed work on a line that looked wrong in the patch. |
+| **offset** | Every trace by source-receiver distance: the whole patch collapses onto one hyperbola, for moveout, mute design and velocity. |
+| **azimuth** | By source-to-receiver azimuth (survey convention, north = 0), for azimuthal behaviour and for seeing how the patch covers azimuth at all. |
+
+Because every arrangement is the same 2-D panel, the analysis windows,
+spectra, picking and full-image export work on 3-D shots exactly as they do
+on 2-D ones. Picks are stored against the **trace**, not the screen column,
+so they follow a re-sort — and picks on traces that a single-line view leaves
+out are hidden rather than discarded, and come back when you go back.
+
+`offset` and `azimuth` need geometry; `receiver line` needs 4-D
+`(shot, recy, recx, time)` data, where the line structure is explicit. The
+selector offers only what the dataset can actually do, and hides itself for a
+2-D line with no geometry. The **Shot volume** tab shows the current shot as a
+cuboid as well, on the same filter/gain chain — a second opinion, not the way
+in.
+
+Try it: `python examples/quickstart.py patch`.
+
+### Acquisition QC: the CMP fold map
+
+The **Fold** tab bins every source-receiver midpoint and counts them: a hole
+in the fold map is a hole in the image, and it is visible here long before
+anything has been processed.
+
+<img src="https://raw.githubusercontent.com/zzzzswh/gathervis/main/docs/images/fold.png" width="520" alt="CMP fold map of an orthogonal land 3-D, full fold in the middle tapering to the edges"/>
+
+*Fold of an orthogonal land 3-D (25 m stations on 200 m receiver lines, 50 m
+shot points on 200 m shot lines). A fixed full spread, so fold peaks in the
+middle and tapers off the edges.*
+
+Bin size defaults to half the receiver station interval in-line and half the
+line interval cross-line -- the natural CMP sampling -- and both are editable,
+so you can see straight away what a coarser bin buys you in fold and costs you
+in resolution. Empty bins draw as background rather than as the bottom of the
+colour scale, so the live area's own shape reads directly. The summary line
+gives grid size, live bins, max and mean fold, and the trace total (which must
+equal `sources x receivers`, and is worth a glance as a geometry checksum).
+
+It is computed from **coordinates only**, so it costs the same on a 100 GB
+survey as on a toy one, and works on a bare `Geometry` with no traces at all:
+
+```python
+from gathervis.survey import fold, default_bin
+grid = fold(ds.geometry)                     # or fold(geo, (12.5, 100.0))
+grid.counts                                  # (ny, nx) traces per bin
+grid.nlive, grid.extent, grid.bin_of(x, y)
+```
+
+Tapping a bin selects it -- that is the hook the offset-azimuth rose diagram
+hangs off (next on the roadmap).
+
 ### Gestures & controls
 
 | To do this | Do this |
@@ -115,12 +182,16 @@ that shot and jumps back to its gather, with the active spread highlighted:
 | Auto first breaks | set STA / LTA / threshold → *auto pick*; refine with *snap* (peak / trough / \|max\|) or by dragging |
 | Compare spectrum peaks | crosshair toolbar icon + the freq / dB readout under the panel |
 | Scale one axis | the x-only / y-only wheel-zoom toolbar tools |
+| Re-sort a 3-D shot | the *sort* selector (as recorded / receiver line / offset / azimuth) |
+| Re-bin the fold map | *bin x* / *bin y* on the Fold tab (*default bin* restores) |
+| Select a CMP bin | tap it on the fold map |
+| Step through receiver lines | *sort* = receiver line, then the line slider |
 | Reshape the 3-D cuboid | one *stretch* slider per axis (1.0 centered, 0.125×–8×) |
 | Jump to a shot | drag the slider, type in *go to shot*, or tap a source on the Geometry tab |
 | Resize the spectrum panel | *size* (S / M / L) in the Spectrum block |
 | Save the gather as an image | the **⤓ full image** button (full resolution) · the toolbar *save* icon (current view, screen resolution) |
 | Step through shots | **←** / **→** |
-| Send someone the exact view you are looking at | copy the URL — shot, colormap, clip, polarity, filter and gain all live in the query string |
+| Send someone the exact view you are looking at | copy the URL — shot, sort, colormap, clip, polarity, filter and gain all live in the query string |
 
 The same cheat-sheet lives in-app behind the *? gestures* button. The arrow
 keys are the only shortcut — everything else is set once and stays on its
@@ -149,8 +220,8 @@ automatically for property volumes.
 One click switches every 2-D panel between variable density and
 variable-area wiggle, and a *flip polarity* checkbox negates the display
 (wiggle fill lobes and density colors swap together — SEG normal ↔ reverse).
-Colormaps: `seismic`, `gray`, `petrel` (anchors from cigvis), `rainbow`,
-each with a `_r` reversed variant. The clip-percentile slider sets the color
+Colormaps: `gray` (the default), `seismic`, `petrel` (anchors from cigvis)
+and `rainbow`, each with a `_r` reversed variant. The clip-percentile slider sets the color
 limits — and doubles as wiggle gain.
 
 <img src="https://raw.githubusercontent.com/zzzzswh/gathervis/main/docs/images/display_modes.png" width="620" alt="variable density vs wiggle"/>
@@ -229,17 +300,24 @@ save_png("shot007.png", a, cmap="gray")            # or display="wiggle"
 
 The last axis is always the vertical one: **time** for data, **depth** for
 property volumes. A bare 3-D array defaults to `(shot, rec, time)` and is
-browsed shot by shot; pass `view='slices'` to slice it as a volume instead, or
-declare other semantics explicitly with `axes=`. `axes` says what the array
-*is*, `view` says how to *look* at it — the two are independent.
+browsed shot by shot; a 4-D array defaults to `(shot, recy, recx, time)`, one
+3-D shot record per shot. Pass `view='slices'` to slice a 3-D array as a
+volume instead, or declare other semantics explicitly with `axes=`. `axes`
+says what the array *is*, `view` says how to *look* at it, and `sort` (in the
+app) says in what order — the three are independent.
 
 ## Design notes
 
 * **Lazy everywhere.** memmap-backed data; browsing a shot reads only that
   shot's bytes; slicing reads only that slice; filtering and spectra apply to
-  the displayed gather only.
+  the displayed gather only. Sorting a shot by acquisition order or by
+  receiver line stays lazy too (a reshape, a slice); only offset/azimuth
+  order has to materialise the shot — one shot, not the file.
 * **Cheap wire format.** Panels are stride-decimated to a pixel budget and
   quantized to uint8 server-side before shipping to the browser.
+* **Ordering is not processing.** A sort returns the shot's own traces in a
+  different order and the filter/gain chain runs on the result, so there is
+  one processing path for 2-D and 3-D shots alike.
 * **Two rendering primitives.** 2-D panels are bokeh images/wiggles; volumes
   are plotly WebGL slice planes. Both are fed by the same decimate → uint8
   pipeline.
@@ -258,11 +336,37 @@ declare other semantics explicitly with `axes=`. `axes` says what the array
 ## Roadmap
 
 **M2** (remaining): synced comparison panels · client-side volume cache for
-cigvis-grade slice scrubbing (AGC / trace balance / CuPy: done). **M3** (remaining): header indexing, gather extraction by any key
+cigvis-grade slice scrubbing (AGC / trace balance / CuPy: done). **3-D
+acquisition QC** (remaining): shot-record time slices over the receiver grid ·
+offset-azimuth rose diagrams per bin (3-D shot sorting, CMP fold map: done). **M3** (remaining): header indexing, gather extraction by any key
 (SEG-Y import: done). **M4** (remaining):
 common-offset/time slicing, NMO preview (event picking: done). Full plan:
 [`docs/plan.md`](https://github.com/zzzzswh/gathervis/blob/main/docs/plan.md). *And whatever you ask for — see the note at
 the top.*
+
+## Related projects
+
+### cigvis
+
+[**cigvis**](https://github.com/JintaoLee-Roger/cigvis) — my advisor's project,
+and the tool to reach for when your data is a **volume** rather than
+**gathers**. It visualizes 3-D seismic data together with everything that goes
+on top of it — labels, faults, RGT, horizon surfaces, well-log trajectories and
+curves, geological bodies — as well as 2-D and 1-D data, driven by vispy for
+3-D, matplotlib for 2-D/1-D and plotly for Jupyter, with optional viser and
+OpenVDS backends.
+
+gathervis does not try to compete with it. The two divide by data type:
+
+| | gathervis | cigvis |
+| --- | --- | --- |
+| Data | pre-stack gathers, acquisition geometry | volumes + interpretation products |
+| Typical use | shot browsing, QC, filters, spectra, picking | 3-D rendering, horizons, faults, wells, bodies |
+| Front end | browser only (Panel / Bokeh), one port | desktop (vispy) + plotly / viser |
+
+gathervis's **Volume slices** tab is a convenience for a quick look at the
+cuboid your gathers live in — deliberately one cuboid, three planes, nothing
+else. The moment you want real volume interpretation, use cigvis.
 
 ## Acknowledgements
 

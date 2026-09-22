@@ -108,15 +108,16 @@ def test_volume3d_decimation_budget():
 
 
 def test_workspace_tabs_and_info(line):
-    ws = Workspace(line)                # 3-D line with geometry -> 3 tabs
-    assert list(ws.tabs._names) == ["Shot gathers", "Geometry", "Volume slices"]
+    ws = Workspace(line)                # 3-D line with geometry -> 4 tabs
+    assert list(ws.tabs._names) == ["Shot gathers", "Geometry", "Fold",
+                                    "Volume slices"]
     assert ws.map is not None
     from gathervis.viewer import _info_md, _survey_kind
     md = _info_md(line)
     assert "2-D seismic line" in md and "sources" in md
     assert isinstance(ws.panel(), pn.viewable.Viewable)
     ws2 = Workspace(line, view="slices")
-    assert ws2.tabs.active == 2                # slices tab initially active
+    assert ws2.tabs.active == 3                # slices tab initially active
     vol = gv.from_array(np.zeros((4, 5, 30), "f4"),
                         axes=("recy", "recx", "time"))
     assert _survey_kind(vol) == "volume"
@@ -127,7 +128,7 @@ def test_workspace_tabs_and_info(line):
 
 def test_layout_tab_pick_jumps_to_shots(line):
     ws = Workspace(line, view="slices")
-    assert ws.tabs.active == 2
+    assert ws.tabs.active == 3
     ws.map._on_tap("indices", [], [4])  # tap a source on the layout tab
     assert ws.browser.ishot == 4        # shot selected...
     assert ws.tabs.active == 0          # ...and view jumped to shot gathers
@@ -273,7 +274,7 @@ def test_geometry_tab_label(line):
 def test_live_slider_semantics(line):
     b = ShotBrowser(line, _state(line))
     seen = []
-    b.on_shot_change = seen.append
+    b.on_shot_change.append(seen.append)
     b.w_shot.value = 3                        # dragging updates live
     assert seen == [3] and b.w_jump.value == 3
 
@@ -657,7 +658,9 @@ def test_pick_tool_per_shot_and_csv(line):
     pt.cds.data = dict(x=[2.0], y=[0.02])
     b.set_shot(0)                              # back to shot 0 -> restored
     assert sorted(pt.cds.data["x"]) == [1.0, 3.0, 5.0]
-    assert pt.picks() == {0: ([5.0, 1.0, 3.0], [0.05, 0.01, 0.03]),
+    # picks are banked against their traces, so the store comes back in
+    # trace order rather than in the order they happened to be clicked
+    assert pt.picks() == {0: ([1.0, 3.0, 5.0], [0.01, 0.03, 0.05]),
                           2: ([2.0], [0.02])}
     # CSV export: header + sorted by shot then trace
     csv = pt._export().getvalue()
@@ -1136,7 +1139,7 @@ def test_download_follows_the_display_chain(line):
 
     raw = _decode_png(pane.w_download.callback().getvalue())
     arr, clim = pane._last[0], pane._last[1]
-    assert np.array_equal(raw, palette_rgb("seismic")[quantize(arr, clim).T])
+    assert np.array_equal(raw, palette_rgb("gray")[quantize(arr, clim).T])
 
     w_cmap.value = "petrel"                        # colormap
     ws._w_ftype.value = "band-pass"                # filter
@@ -1200,10 +1203,16 @@ def test_no_export_card_anywhere(line):
     assert not hasattr(ws.browser, "ex")
 
 
-def test_per_shot_3d_has_no_download():
+def test_per_shot_3d_is_a_2d_panel():
+    """4-D shots browse as a sorted 2-D panel, so they get the 2-D tools
+    (windows, spectra, picking, full-image download) like any other gather;
+    the cuboid is an extra tab, not the only way in."""
     g = gv.from_array(np.zeros((2, 4, 5, 20), "f4"), dt=0.004)
-    ws = Workspace(g)                              # 4-D: no 2-D pane at all
-    assert not hasattr(ws.browser, "pane")
+    ws = Workspace(g)
+    assert ws.browser.pane._last[0].shape == (20, 20)   # 4 lines x 5 stations
+    assert not ws.browser.pane.w_download.disabled
+    assert ws.browser.tool_cards()                      # tools are available
+    assert "Shot volume" in list(ws.tabs._names)
 
 
 def test_save_png_script_helper(tmp_path):

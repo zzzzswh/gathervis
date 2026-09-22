@@ -542,12 +542,11 @@ wheels = [
 
 [[package]]
 name = "gathervis"
-version = "0.14.1"
+version = "0.16.0"
 source = { editable = "." }
 dependencies = [
     { name = "bokeh", version = "3.4.3", source = { registry = "https://pypi.tuna.tsinghua.edu.cn/simple" }, marker = "python_full_version < '3.10'" },
     { name = "bokeh", version = "3.9.2", source = { registry = "https://pypi.tuna.tsinghua.edu.cn/simple" }, marker = "python_full_version >= '3.10'" },
-    { name = "deepwave" },
     { name = "numpy", version = "2.0.2", source = { registry = "https://pypi.tuna.tsinghua.edu.cn/simple" }, marker = "python_full_version < '3.10'" },
     { name = "numpy", version = "2.2.6", source = { registry = "https://pypi.tuna.tsinghua.edu.cn/simple" }, marker = "python_full_version == '3.10.*'" },
     { name = "numpy", version = "2.4.6", source = { registry = "https://pypi.tuna.tsinghua.edu.cn/simple" }, marker = "python_full_version == '3.11.*'" },
@@ -555,13 +554,16 @@ dependencies = [
     { name = "panel", version = "1.4.5", source = { registry = "https://pypi.tuna.tsinghua.edu.cn/simple" }, marker = "python_full_version < '3.10'" },
     { name = "panel", version = "1.9.3", source = { registry = "https://pypi.tuna.tsinghua.edu.cn/simple" }, marker = "python_full_version >= '3.10'" },
     { name = "plotly" },
-    { name = "torch" },
 ]
 
 [package.optional-dependencies]
 dev = [
     { name = "pytest", version = "8.4.2", source = { registry = "https://pypi.tuna.tsinghua.edu.cn/simple" }, marker = "python_full_version < '3.10'" },
     { name = "pytest", version = "9.1.1", source = { registry = "https://pypi.tuna.tsinghua.edu.cn/simple" }, marker = "python_full_version >= '3.10'" },
+]
+examples = [
+    { name = "deepwave" },
+    { name = "torch" },
 ]
 segy = [
     { name = "segyio", version = "1.9.13", source = { registry = "https://pypi.tuna.tsinghua.edu.cn/simple" }, marker = "python_full_version < '3.10'" },
@@ -571,15 +573,15 @@ segy = [
 [package.metadata]
 requires-dist = [
     { name = "bokeh", specifier = ">=3.3" },
-    { name = "deepwave", specifier = ">=0.0.27" },
+    { name = "deepwave", marker = "extra == 'examples'", specifier = ">=0.0.27" },
     { name = "numpy", specifier = ">=1.22" },
     { name = "panel", specifier = ">=1.3" },
     { name = "plotly", specifier = ">=5.15" },
     { name = "pytest", marker = "extra == 'dev'" },
     { name = "segyio", marker = "extra == 'segy'" },
-    { name = "torch", specifier = ">=2.4.0,<2.11", index = "https://download.pytorch.org/whl/cu121" },
+    { name = "torch", marker = "extra == 'examples'", specifier = ">=2.4.0,<2.11", index = "https://download.pytorch.org/whl/cu121" },
 ]
-provides-extras = ["segy", "dev"]
+provides-extras = ["segy", "examples", "dev"]
 
 [[package]]
 name = "idna"
