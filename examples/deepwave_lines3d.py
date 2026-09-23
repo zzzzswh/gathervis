@@ -32,6 +32,34 @@ VEL = Path("lines3d_vel.npy")
 # ---------------------------------------------------------------------------
 # the 3-D velocity model, v[z, y, x] in m/s (deepwave's index order)
 # ---------------------------------------------------------------------------
+
+_MISSING_TORCH = """
+This example forward-models the data, which needs torch and deepwave. The
+viewer itself does not -- they are declared as the `examples` extra, so they
+are not installed by default (torch is ~2.5 GB against a 37 KB viewer).
+
+    uv sync --extra examples          # add them to the project environment
+    uv run --extra examples {script}  # or just for this one run
+
+pyproject pins torch to the cu121 index. Without a GPU, or to keep it small:
+
+    uv run --extra examples --index https://download.pytorch.org/whl/cpu {script}
+
+With pip:  pip install "gathervis[examples]"
+"""
+
+
+def _import_deepwave(script):
+    """torch + deepwave, or a message that says what to do about it."""
+    try:
+        import torch
+        import deepwave
+        from deepwave import scalar
+    except ImportError as exc:
+        raise SystemExit(f"{exc}\n{_MISSING_TORCH.format(script=script)}") from None
+    return torch, deepwave, scalar
+
+
 def build_model(nz, ny, nx, d):
     lx, ly = (nx - 1) * d, (ny - 1) * d
     x = np.arange(nx) * d
@@ -66,9 +94,7 @@ def build_model(nz, ny, nx, d):
 # ---------------------------------------------------------------------------
 def model(p):
     _t0 = time.perf_counter()
-    import torch
-    import deepwave
-    from deepwave import scalar
+    torch, deepwave, scalar = _import_deepwave("examples/deepwave_lines3d.py")
     print(f"[timer] import torch/deepwave: {time.perf_counter() - _t0:.1f}s")
 
     def _pick_device():
@@ -89,8 +115,15 @@ def model(p):
 
     # -- five parallel lines along x --------------------------------------
     line_iy = np.linspace(0.22 * p.ny, 0.78 * p.ny, 5).round().astype(int)
-    rec_ix = np.linspace(8, p.nx - 9, p.nrec).round().astype(int)
-    src_ix = np.linspace(12, p.nx - 13, p.nsrc).round().astype(int)
+    # Stations on whole grid points at a constant step, not linspace().round().
+    # Rounding a fractional step gives alternating 1- and 2-cell gaps, and the
+    # midpoints inherit the jitter -- which shows up on the fold map as holes
+    # inside the live area, because a CMP bin is half a station interval and
+    # has nowhere to put a midpoint that landed off the grid.
+    rec_step = max(1, (p.nx - 17) // p.nrec)
+    rec_ix = 8 + rec_step * np.arange(p.nrec)
+    src_step = max(1, (rec_ix[-1] - rec_ix[0]) // (p.nsrc + 1) // rec_step * rec_step)
+    src_ix = rec_ix[0] + src_step + src_step * np.arange(p.nsrc)
     iz = 1                                             # just below the surface
 
     src_list, rec_list = [], []                        # (iz, iy, ix) per shot

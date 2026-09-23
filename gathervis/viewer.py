@@ -24,13 +24,16 @@ from bokeh.events import DocumentReady
 from bokeh.models import (BoxEditTool, ColorBar, ColumnDataSource,
                           CrosshairTool, CustomJS, Div, LabelSet,
                           LinearColorMapper, PointDrawTool, PolyDrawTool,
-                          TapTool, TextInput)
+                          Range1d, TapTool, TextInput)
 from bokeh.plotting import figure
 
 from .core import Gathers, from_array, from_file
 from .process import (robust_clim, decimate, quantize, bandpass,
                       agc, trace_balance, pick_first_breaks)
+from . import mute as _mute
 from . import render as _render
+from . import state as _state
+from . import velocity as _vel
 from . import sortkeys as _sort
 from . import survey as _survey
 from .render import (CMAPS as _CMAPS, palette_hex as _palette, png_bytes,
@@ -458,9 +461,17 @@ class ImagePane:
         self.cmap = cmap                # kept so the download uses them too
         self.flip_y = bool(flip_y)
         self._last = None               # args of the latest update()
+        self._extent = None             # (x0, x1, y0, y1) currently bounded
+        # Explicit ranges rather than bokeh's auto-ranging ones. Auto-ranging
+        # decides in the browser whether it still follows the data after a
+        # pan, and the answer matters here: step to the next shot with the
+        # panel dragged off to one side and the gather has to come back into
+        # view, not stay wherever the last drag left it.
         fig = figure(height=height, sizing_mode="stretch_width",
                      x_axis_label=xlabel, y_axis_label=ylabel,
                      match_aspect=match_aspect,
+                     x_range=Range1d(0.0, 1.0),
+                     y_range=Range1d(1.0, 0.0) if flip_y else Range1d(0.0, 1.0),
                      tools="pan,wheel_zoom,xwheel_zoom,ywheel_zoom,"
                            "box_zoom,reset,save",
                      active_scroll="wheel_zoom")
@@ -487,12 +498,16 @@ class ImagePane:
                                 source=self._cds_seplab,
                                 text_font_size="9px", text_color="#5f6368",
                                 text_align="center", y_offset=3))
-        fig.y_range.flipped = bool(flip_y)
-        fig.x_range.range_padding = fig.y_range.range_padding = 0
         fig.toolbar.logo = None
         self.readout = Div(text="&nbsp;", height=18,
                            styles={"color": "#5f6368", "font-size": "12px",
                                    "font-family": "monospace"})
+        # Wiggle mode cannot draw a thousand traces legibly and will not try,
+        # so it subsamples -- and then says so. A panel quietly showing half
+        # the gather is worse than one that shows all of it badly, because
+        # you cannot tell which you are looking at.
+        self.subsampled = Div(text="", height=0,
+                              styles={"color": "#b45309", "font-size": "12px"})
         yn = ylabel.split(" ")[0]
         yu = ylabel[ylabel.find("(") + 1:ylabel.find(")")] \
             if "(" in ylabel else ""
@@ -525,6 +540,27 @@ class ImagePane:
             code=_FIT_JS)
         self.js_fullscreen = self.w_fullscreen.js_on_click(
             args=dict(sl=self.w_height, cls=self._cls), code=_FULLSCREEN_JS)
+        # How much of the gather actually reaches the browser. Both default
+        # to a budget rather than to everything, because a 5000 x 12000
+        # gather is 60 MB of uint8 per redraw and the tab stops responding
+        # long before it finishes -- but the budget is a default, not a
+        # decision, so both are here and both say when they bite.
+        self.w_res = pn.widgets.Select(
+            name="resolution", options=["auto", "full"], value="auto",
+            width=96, margin=(12, 3),
+            description="auto caps the image at 1600 px per axis; full ships "
+                        "every trace and every sample")
+        self.w_wig_n = pn.widgets.IntInput(
+            name="wiggle traces", value=MAX_WIGGLE[0], start=2, end=20000,
+            step=16, width=104, margin=(12, 3),
+            description="how many traces the wiggle display draws; raise it "
+                        "for a denser panel, lower it for a cleaner one")
+        self.w_res.param.watch(lambda e: self.redraw(), "value")
+        self.w_wig_n.param.watch(lambda e: self.redraw(), "value")
+        self.w_reset = pn.widgets.Button(
+            name="⤾ whole", width=82, button_type="light", margin=(18, 3),
+            description="show the whole panel again")
+        self.w_reset.on_click(lambda e: self.reset_view())
         self.w_download = pn.widgets.FileDownload(
             callback=self._export_png, filename="gather.png",
             label="⤓ full image", button_type="light", width=118,
@@ -532,16 +568,27 @@ class ImagePane:
             description="download full image")
 
     def size_controls(self):
-        """Compact height slider + fit + fullscreen + download row."""
-        return pn.Row(self.w_height, self.w_fit, self.w_fullscreen,
-                      self.w_download, margin=0)
+        """Compact height slider + whole + fit + fullscreen + download row.
+
+        ``whole`` resets the *data* range and ``fit`` resizes the *panel* --
+        two different things that both feel like "make it right again", so
+        they sit next to each other.
+        """
+        return pn.Row(self.w_height, self.w_res, self.w_wig_n, self.w_reset,
+                      self.w_fit, self.w_fullscreen, self.w_download,
+                      margin=0)
 
     def frame(self, *extra, controls=True):
         """The plot, its readout and ``extra``, in the fullscreen container."""
         items = [self.size_controls()] if controls else []
-        items += [self.figure, self.readout, *extra]
+        items += [self.figure, self.readout, self.subsampled, *extra]
         return pn.Column(*items, css_classes=["gv-plot", self._cls],
                          sizing_mode="stretch_width")
+
+    def redraw(self):
+        """Re-render the latest data, e.g. after a resolution change."""
+        if self._last is not None:
+            self.update(*self._last)
 
     def set_cmap(self, name: str):
         self.mapper.palette = _palette(name)   # density mode only
@@ -568,11 +615,57 @@ class ImagePane:
     def update(self, arr2d, clim, x0=0.0, dx=1.0, y0=0.0, dy=1.0):
         """arr2d: (nx, ny) with axis 0 on x. Decimates before shipping."""
         self._last = (arr2d, clim, x0, dx, y0, dy)
+        nx, ny = arr2d.shape
+        self._set_extent(x0, x0 + nx * dx, y0, y0 + ny * dy, dx)
         if self.display == "wiggle":
             self._update_wiggle(arr2d, clim, x0, dx, y0, dy)
         else:
             self._update_image(arr2d, clim, x0, dx, y0, dy)
         self._sync_download()
+
+    def _set_extent(self, x0, x1, y0, y1, dx):
+        """Fence the view to the data, and re-fit when the data changes shape.
+
+        Two things, because they are the same decision seen from either end.
+        ``bounds`` stops a pan or a zoom-out from carrying the gather off the
+        edge of the panel -- there is nothing out there to look at, and a
+        panel showing nothing but background gives no hint of which way to
+        drag to get back.
+
+        Re-fitting only when the *extent* changes is what keeps that from
+        being annoying. Stepping through shots of the same size leaves the
+        zoom where it was, which is the whole point of zooming in on a
+        feature and walking the shots past it. A different sort, a different
+        gather, a different dataset -- those change the extent, and then the
+        view goes back to the whole thing rather than to whatever corner of
+        the old one you happened to be in.
+        """
+        extent = (float(x0), float(x1), float(y0), float(y1))
+        if not all(np.isfinite(extent)) or x1 <= x0 or y1 <= y0:
+            return
+        fig = self.figure
+        # Wiggle lobes swing up to two trace spacings past the edge traces,
+        # so the fence sits that far out rather than on the image edge.
+        pad = 2.0 * abs(float(dx))
+        fig.x_range.bounds = (extent[0] - pad, extent[1] + pad)
+        fig.y_range.bounds = (extent[2], extent[3])
+        if extent == self._extent:
+            return
+        self._extent = extent
+        self.reset_view()
+
+    def reset_view(self):
+        """Show the whole panel, whatever it is currently zoomed to."""
+        if self._extent is None:
+            return
+        x0, x1, y0, y1 = self._extent
+        fig = self.figure
+        fig.x_range.start, fig.x_range.end = x0, x1
+        fig.y_range.start, fig.y_range.end = (y1, y0) if self.flip_y else (y0, y1)
+        # so the toolbar's reset goes to the whole panel too, not to whatever
+        # the range happened to be when the figure was first rendered
+        fig.x_range.reset_start, fig.x_range.reset_end = x0, x1
+        fig.y_range.reset_start, fig.y_range.reset_end = fig.y_range.start, fig.y_range.end
 
     def set_separators(self, xs, labels=None, label_x=None):
         """Dashed verticals at ``xs``, spanning the panel; ``labels`` (drawn
@@ -625,9 +718,34 @@ class ImagePane:
             f"gather too large to export ({w * h / 1e6:.0f} MP)" if over
             else f"download full image ({w} × {h} px)")
 
+    def _note(self, text):
+        self.subsampled.text = text
+        self.subsampled.height = 18 if text else 0
+
+    def _say_subsampled(self, shown, total, step):
+        """Tell the user when wiggle is not drawing every trace."""
+        if shown >= total:
+            self._note("")
+            return
+        self._note(f"wiggle: drawing {shown} of {total} traces (every "
+                   f"{step}) &mdash; raise <b>wiggle traces</b> for all of "
+                   f"them, or switch to density")
+
+    def _say_pixels(self, shown, total):
+        """Tell the user when density is shipping fewer pixels than traces."""
+        if tuple(shown) == tuple(total):
+            self._note("")
+            return
+        self._note(f"density: {shown[0]} x {shown[1]} of {total[0]} x "
+                   f"{total[1]} samples &mdash; set <b>resolution</b> to "
+                   f"full for every one ({total[0] * total[1] / 1e6:.1f} MB "
+                   f"per redraw)")
+
     def _update_image(self, arr2d, clim, x0, dx, y0, dy):
         nx, ny = arr2d.shape
-        img = quantize(decimate(arr2d, MAX_PX), clim)
+        src = arr2d if self.w_res.value == "full" else decimate(arr2d, MAX_PX)
+        self._say_pixels(src.shape, arr2d.shape)
+        img = quantize(src, clim)
         self.cds.data = dict(image=[img.T], x=[x0], y=[y0],
                              dw=[nx * dx], dh=[ny * dy],
                              lo=[float(clim[0])], hi=[float(clim[1])])
@@ -636,7 +754,8 @@ class ImagePane:
         """Wiggle + variable-area fill. Amplitudes are normalized by the clim
         (the clip-percentile slider doubles as wiggle gain), excursion is one
         displayed trace spacing, clipped at +-2 spacings."""
-        st = max(1, -(-arr2d.shape[0] // MAX_WIGGLE[0]))   # ceil-div strides,
+        n_wig = max(2, int(self.w_wig_n.value))
+        st = max(1, -(-arr2d.shape[0] // n_wig))           # ceil-div strides,
         sy = max(1, -(-arr2d.shape[1] // MAX_WIGGLE[1]))   # same as decimate()
         a = np.asarray(arr2d[::st, ::sy], dtype=np.float32)
         t = (y0 + dy * sy * np.arange(a.shape[1], dtype=np.float32))
@@ -651,6 +770,7 @@ class ImagePane:
             fys.append(np.concatenate([t, [t[-1], t[0]]]))
         self._cds_fill.data = dict(xs=fxs, ys=fys)
         self._cds_wig.data = dict(xs=xs, ys=ys)
+        self._say_subsampled(a.shape[0], arr2d.shape[0], st)
 
 
 _WIN_COLORS = ("#e6741e", "#2ca02c", "#9467bd", "#d62728", "#17becf",
@@ -1378,6 +1498,306 @@ def _dec_coords(n: int, budget: int) -> np.ndarray:
     return np.arange(0, n, step, dtype=np.float32)
 
 
+class MuteTool:
+    """Top and bottom mute lines drawn on a gather panel.
+
+    Two toolbar point tools, one per line: tap to add a node, drag to move
+    it, BACKSPACE deletes the selected one. The line through the nodes is
+    drawn across every trace, so what you see is the cut that will actually
+    be applied, not just the handles you placed.
+
+    **Nodes are stored against offset, not against the column they were
+    dropped on.** A mute is an offset-dependent thing, so a line stored that
+    way means the same cut on the next gather even though it has different
+    traces in a different order -- and it survives re-sorting the panel,
+    which a line pinned to column numbers would not. Without geometry there
+    are no offsets and the line falls back to column index, which is honest
+    but does not travel.
+
+    **One line for everything, with exceptions.** The scope switch decides
+    where an edit goes: *all gathers* writes the default that every gather
+    inherits, *this gather* gives the current one a line of its own. Most
+    gathers want the same mute and a few do not, so that is the shape --
+    nothing is interpolated between gathers, because a viewer should not
+    invent a mute for a gather nobody has looked at.
+
+    Turning *apply* on shows the gather muted. That is not decoration: you
+    cannot tell whether a cut is in the right place without seeing what it
+    removes.
+    """
+
+    _TOP = "#1e88e5"
+    _BOTTOM = "#f4511e"
+
+    def __init__(self, pane: ImagePane, mutes=None, domain="offset"):
+        self.pane = pane
+        self.mutes = mutes if mutes is not None else _mute.Mutes(domain)
+        self._cards = {}
+        self._busy = False
+        self._key = 0                 # the gather being shown
+        self._x = None                # (ncol,) domain value per column
+        # Where each node was last drawn, and the domain value it stands
+        # for. A node snaps to the nearest column to be drawn, and this
+        # gather's columns rarely sit at exactly the offsets the line was
+        # built from -- so reading the column back would quietly move the
+        # node every time anything else on the line was touched. Nodes that
+        # did not move in x keep the value they came in with.
+        self._placed = {k: (np.zeros(0), np.zeros(0)) for k in _mute.KINDS}
+        self.on_change = []           # hooks: called when a line is edited
+
+        self.cds = {}                 # kind -> draggable nodes (column, time)
+        self._cds_line = {}           # kind -> the rendered cut
+        for kind, colour in ((_mute.TOP, self._TOP), (_mute.BOTTOM, self._BOTTOM)):
+            self._cds_line[kind] = ColumnDataSource(dict(x=[], y=[]))
+            pane.figure.line("x", "y", source=self._cds_line[kind],
+                             line_width=2, line_color=colour, line_alpha=0.85)
+            self.cds[kind] = ColumnDataSource(dict(x=[], y=[]))
+            r = pane.figure.scatter("x", "y", source=self.cds[kind], size=10,
+                                    marker="square", fill_color=colour,
+                                    fill_alpha=0.9, line_color="white",
+                                    line_width=1.5)
+            pane.figure.add_tools(
+                PointDrawTool(renderers=[r], description=f"{kind} mute"))
+            self.cds[kind].on_change(
+                "data", lambda a, o, n, k=kind: self._on_edit(k))
+
+        self._build_widgets()
+        self.status = pn.pane.HTML("", sizing_mode="stretch_width")
+
+    # ------------------------------------------------------------------ UI
+    def _build_widgets(self):
+        self.w_scope = pn.widgets.RadioButtonGroup(
+            name="edits go to", options=["all gathers", "this gather"],
+            value="all gathers", button_type="default", **_W)
+        self.w_apply = pn.widgets.Checkbox(name="apply mute", value=False, **_W)
+        self.w_taper = pn.widgets.FloatInput(
+            name="taper (s)", value=0.04, start=0.0, step=0.01, **_W,
+            description="a hard cut leaves a step running along the mute, "
+                        "and a step is broadband energy on a coherent "
+                        "trajectory -- it shows up as an event that was "
+                        "never in the ground")
+        self.w_cut_v = pn.widgets.FloatInput(
+            name="straight cut at (m/s)", value=1500.0, start=1.0, step=100.0,
+            **_W, description="seed a top mute along x / v + delay")
+        self.w_cut_pad = pn.widgets.FloatInput(name="delay (s)", value=0.05,
+                                               start=0.0, step=0.01, **_W)
+        self.w_seed = pn.widgets.Button(name="seed straight top mute", **_W)
+        self.w_seed.on_click(lambda e: self.seed_linear())
+        self.w_promote = pn.widgets.Button(
+            name="make this the default", **_W,
+            description="tuned it here and want it on every gather")
+        self.w_promote.on_click(lambda e: self.promote())
+        self.w_revert = pn.widgets.Button(
+            name="revert to default", **_W,
+            description="drop this gather's own line")
+        self.w_revert.on_click(lambda e: self.revert())
+        self.w_clear = pn.widgets.Button(name="clear both lines", **_W)
+        self.w_clear.on_click(lambda e: self.clear())
+        self.w_export = pn.widgets.FileDownload(
+            callback=self._export, filename="mutes.json", label="export JSON",
+            **_W)
+        self.w_import = pn.widgets.FileInput(accept=".json", **_WFILE)
+        self.w_import.param.watch(self._import, "value")
+        for w in (self.w_apply, self.w_taper):
+            w.param.watch(lambda e: self._fire(), "value")
+
+    # -------------------------------------------------------------- domain
+    def set_gather(self, key, x=None):
+        """Show the lines in force for gather ``key``.
+
+        ``x`` is the domain value of every column -- offsets when there is
+        geometry, otherwise column indices. It changes with the sort, so the
+        browser passes it on every redraw.
+        """
+        if x is not None:
+            self._x = np.asarray(x, dtype=np.float64).reshape(-1)
+        self._key = key
+        self._load()
+
+    def _column_of(self, value):
+        """The column whose domain value is nearest ``value``."""
+        return int(np.argmin(np.abs(self._x - float(value))))
+
+    def _domain_of(self, column):
+        """The domain value of the column nearest ``column``."""
+        j = int(np.clip(round(float(column)), 0, self._x.size - 1))
+        return float(self._x[j])
+
+    # ------------------------------------------------------------ drawing
+    def _load(self):
+        """Put the stored lines onto the panel, in this panel's columns."""
+        if self._x is None or not self._x.size:
+            return
+        self._busy = True
+        try:
+            for kind in _mute.KINDS:
+                nodes = self.mutes.line(self._key, kind)
+                if not len(nodes):
+                    self.cds[kind].data = dict(x=[], y=[])
+                    self._placed[kind] = (np.zeros(0), np.zeros(0))
+                else:
+                    cols = np.array([float(self._column_of(v))
+                                     for v in nodes[:, 0]])
+                    self.cds[kind].data = dict(
+                        x=[float(c) for c in cols],
+                        y=[float(t) for t in nodes[:, 1]])
+                    self._placed[kind] = (cols, nodes[:, 0].copy())
+                self._render(kind)
+        finally:
+            self._busy = False
+        self._refresh_status()
+
+    def _render(self, kind):
+        """Draw the cut through every column, not just through the nodes."""
+        nodes = self._read(kind)
+        if nodes is None or not len(nodes) or self._x is None:
+            self._cds_line[kind].data = dict(x=[], y=[])
+            return
+        times = _mute.evaluate(nodes, self._x)
+        self._cds_line[kind].data = dict(
+            x=[float(j) for j in range(self._x.size)],
+            y=[float(t) for t in times])
+
+    def _read(self, kind):
+        """The nodes currently on screen, converted back to the domain.
+
+        A node still sitting on the column it was drawn at keeps the domain
+        value it was drawn from; only one that was actually dragged sideways
+        is re-derived from its column.
+        """
+        d = self.cds[kind].data
+        if not len(d["x"]) or self._x is None:
+            return np.zeros((0, 2))
+        cols, values = self._placed[kind]
+        free = np.ones(cols.shape, dtype=bool)          # each match used once
+        out = []
+        for c in d["x"]:
+            hit = np.flatnonzero(free & (cols == float(c)))
+            if hit.size:
+                free[hit[0]] = False
+                out.append(float(values[hit[0]]))
+            else:
+                out.append(self._domain_of(c))
+        return np.column_stack([out, [float(t) for t in d["y"]]])
+
+    # ------------------------------------------------------------- editing
+    def _on_edit(self, kind):
+        if self._busy or self._x is None:
+            return
+        nodes = self._read(kind)
+        self.mutes.set(self._target(), kind, nodes)
+        self._placed[kind] = (np.array([float(c) for c in self.cds[kind].data["x"]]),
+                              nodes[:, 0].copy() if len(nodes) else np.zeros(0))
+        self._render(kind)
+        self._refresh_status()
+        self._fire()
+
+    def _target(self):
+        """Where an edit is written: the default, or this gather."""
+        return self._key if self.w_scope.value == "this gather" else None
+
+    def seed_linear(self):
+        """Start a top mute from one velocity and one delay."""
+        if self._x is None or not self._x.size:
+            return
+        line = _mute.linear_line(v=float(self.w_cut_v.value),
+                                 x_max=float(self._x.max()),
+                                 x_min=float(self._x.min()),
+                                 pad=float(self.w_cut_pad.value))
+        self.mutes.set(self._target(), _mute.TOP, line)
+        self._load()
+        self._fire()
+
+    def promote(self):
+        """Make this gather's lines the default for every gather."""
+        self.mutes.promote(self._key)
+        self.w_scope.value = "all gathers"
+        self._load()
+        self._fire()
+
+    def revert(self):
+        """Drop this gather's own lines; it goes back to the default."""
+        self.mutes.clear(self._key)
+        self._load()
+        self._fire()
+
+    def clear(self):
+        """Remove both lines from whichever scope is being edited."""
+        self.mutes.clear(self._target())
+        self._load()
+        self._fire()
+
+    def _fire(self):
+        for hook in self.on_change:
+            hook()
+
+    # -------------------------------------------------------------- output
+    def apply(self, arr, dt, t0=0.0):
+        """Mute ``arr`` with the lines in force, if *apply* is on."""
+        if not self.w_apply.value or self._x is None or self._x.size != arr.shape[0]:
+            return arr
+        top, bottom = (self.mutes.line(self._key, k) for k in _mute.KINDS)
+        if not len(top) and not len(bottom):
+            return arr
+        return _mute.apply(arr, self._x, dt, top=top, bottom=bottom, t0=t0,
+                           taper=float(self.w_taper.value))
+
+    def _refresh_status(self):
+        own = self.mutes.is_override(self._key)
+        where = ("<b style='color:#f4511e'>its own line</b>" if own
+                 else "the <b>default</b>")
+        n = len(self.mutes)
+        extra = f" &nbsp;·&nbsp; {n} gather{'s' if n != 1 else ''} differ" if n else ""
+        unit = "offset" if self.mutes.domain == "offset" else "trace"
+        self.status.object = (
+            f"<div style='font-size:12px;color:#5f6368'>gather "
+            f"<b>{self._key}</b> is using {where}{extra} &nbsp;·&nbsp; "
+            f"lines stored against <b>{unit}</b></div>")
+
+    def _export(self):
+        import io
+        buf = io.StringIO(self.mutes.to_json())
+        buf.seek(0)
+        return buf
+
+    def _import(self, event):
+        raw = event.new
+        if isinstance(raw, dict):
+            raw = next(iter(raw.values()), None)
+        if not raw:
+            return
+        if isinstance(raw, bytes):
+            raw = raw.decode("utf-8", "replace")
+        try:
+            self.mutes = _mute.Mutes.from_json(raw)
+        except (ValueError, UnicodeDecodeError) as exc:
+            self.status.object = (f"<div style='font-size:12px;color:#b45309'>"
+                                  f"could not read that file: {exc}</div>")
+            return
+        self._load()
+        self._fire()
+
+    # --------------------------------------------------------------- cards
+    def card(self, sidebar=False):
+        key = ("mute", sidebar)
+        if key not in self._cards:
+            self._cards[key] = pn.Card(
+                self.w_apply, self.w_taper,
+                _hint("toolbar has one point tool per line: "
+                      f"<b style='color:{self._TOP}'>top</b> and "
+                      f"<b style='color:{self._BOTTOM}'>bottom</b>. Tap adds "
+                      "a node, drag moves it, tap-select + BACKSPACE deletes."),
+                pn.Row(self.w_cut_v, self.w_cut_pad, **_W), self.w_seed,
+                pn.layout.Divider(margin=(8, 0, 4, 0)),
+                self.w_scope,
+                _hint("one line serves every gather; switch to <b>this "
+                      "gather</b> to give the current one an exception"),
+                self.w_promote, self.w_revert, self.w_clear,
+                self.w_export, self.w_import,
+                title="Mute", **_card_style(sidebar))
+        return self._cards[key]
+
+
 class VolumeView3D:
     """cigvis-style volume view: a 3-D cuboid with three axis-aligned slice
     planes, rendered in the browser as plotly WebGL surfaces.
@@ -1541,6 +1961,11 @@ class VolumeView3D:
         if push:
             self._push()
 
+    def redraw(self):
+        """Re-render the latest data, e.g. after a resolution change."""
+        if self._last is not None:
+            self.update(*self._last)
+
     def set_cmap(self, name: str):
         self._cs = _colorscale(name)
         for trace in self.fig["data"][:3]:
@@ -1600,6 +2025,13 @@ class ShotBrowser:
                  tools="sidebar"):
         _ensure_ext()
         self.g, self.state = g, state
+        # A cached chain when the state is display-backed: stepping shots
+        # pays in full, but changing the clip percentile or the colormap no
+        # longer re-runs the filter and the AGC for nothing.
+        display = getattr(state, "display", None)
+        self._chain = _state.Chain(display) if display is not None else None
+        if self._chain is not None:
+            self._chain.set_global_clim(state["clim"])
         self._tools_sidebar = tools == "sidebar"
         self._help = None
         self._stem = _slug(g.name)
@@ -1610,6 +2042,12 @@ class ShotBrowser:
         self.panes = [self.pane]
         self.wt = WindowTool(self.pane)    # windows + spectra + export
         self.pt = PickTool(self.pane)      # per-shot event picking
+        # Mute lines live in offset when there is geometry to define one, so
+        # that one line means the same cut on every shot; without geometry
+        # they fall back to column index and stay put on this shot.
+        self.mt = MuteTool(self.pane,
+                           domain="offset" if g.geometry is not None else "trace")
+        self.mt.on_change.append(self.redraw)
 
         self.w_shot = pn.widgets.IntSlider(name="shot", start=0, end=g.nshot - 1,
                                            value=0, sizing_mode="stretch_width")
@@ -1659,7 +2097,12 @@ class ShotBrowser:
         # reads only this shot's bytes, in the requested order
         panel = _sort.arrange(self.g, self.ishot, self.sort,
                               line=int(self.w_line.value))
-        arr, clim = _process_gather(panel.data, self.g.dt, self.state)
+        arr, clim = self._process(panel)
+        # The mute has to know this panel's x before it can be applied: the
+        # lines are stored against offset and the columns change with the
+        # sort, so the mapping is rebuilt on every redraw.
+        self.mt.set_gather(self.ishot, self._domain(panel))
+        arr = self.mt.apply(arr, self.g.dt, t0=self.g.t0)
         self.pane.figure.xaxis.axis_label = panel.xlabel
         self.pane.update(arr, clim, y0=self.g.t0, dy=self.g.dt)
         self._draw_separators(panel)
@@ -1670,6 +2113,20 @@ class ShotBrowser:
         self.pane.w_download.filename = self._filename()
         for hook in self.on_shot_change:
             hook(self.ishot)
+
+    def _process(self, panel):
+        """Filter and gain this panel, reusing whatever is still valid."""
+        if self._chain is None:
+            return _process_gather(panel.data, self.g.dt, self.state)
+        self._chain.set_global_clim(self.state["clim"])
+        key = (self.ishot, self.sort, int(self.w_line.value))
+        return self._chain.process(panel.data, self.g.dt, key=key)
+
+    def _domain(self, panel):
+        """The value each column is at, in whatever the mute is stored in."""
+        if self.g.geometry is None:
+            return np.arange(panel.data.shape[0], dtype=float)
+        return _sort.offsets(self.g, self.ishot)[panel.order]
 
     def _draw_separators(self, panel):
         """Mark where one receiver line ends and the next begins."""
@@ -1695,7 +2152,8 @@ class ShotBrowser:
             self._help = _gesture_help()
         btn, body = self._help
         return [self.wt.window_card(True), self.wt.spectrum_card(True),
-                self.pt.picking_card(True), self.pt.fb_card(True), btn, body]
+                self.pt.picking_card(True), self.pt.fb_card(True),
+                self.mt.card(True), btn, body]
 
     def controls(self):
         """Shot slider + jump box, and the sort selector where it applies."""
@@ -1718,7 +2176,8 @@ class ShotBrowser:
                 pn.FlexBox(self.wt.window_card(),
                            self.wt.spectrum_card(),
                            self.pt.picking_card(),
-                           self.pt.fb_card(), help_btn),
+                           self.pt.fb_card(),
+                           self.mt.card(), help_btn),
                 help_body)
         return pn.Column(self.controls(), body, sizing_mode="stretch_width")
 
@@ -1790,6 +2249,23 @@ class FoldMap:
                                           start=0.0, width=110)
         self.w_dy = pn.widgets.FloatInput(name="bin y", value=round(dy, 4),
                                           start=0.0, width=110)
+        # How much of the gather actually reaches the browser. Both default
+        # to a budget rather than to everything, because a 5000 x 12000
+        # gather is 60 MB of uint8 per redraw and the tab stops responding
+        # long before it finishes -- but the budget is a default, not a
+        # decision, so both are here and both say when they bite.
+        self.w_res = pn.widgets.Select(
+            name="resolution", options=["auto", "full"], value="auto",
+            width=96, margin=(12, 3),
+            description="auto caps the image at 1600 px per axis; full ships "
+                        "every trace and every sample")
+        self.w_wig_n = pn.widgets.IntInput(
+            name="wiggle traces", value=MAX_WIGGLE[0], start=2, end=20000,
+            step=16, width=104, margin=(12, 3),
+            description="how many traces the wiggle display draws; raise it "
+                        "for a denser panel, lower it for a cleaner one")
+        self.w_res.param.watch(lambda e: self.redraw(), "value")
+        self.w_wig_n.param.watch(lambda e: self.redraw(), "value")
         self.w_reset = pn.widgets.Button(name="default bin", width=110,
                                          button_type="light", margin=(18, 3))
         self.mapper = LinearColorMapper(palette=_palette(cmap), low=1, high=2,
@@ -1852,8 +2328,9 @@ class FoldMap:
             f"grid <b>{nx} x {ny}</b> bins of "
             f"{grid.dx:g} x {grid.dy:g} &nbsp;·&nbsp; "
             f"<b>{grid.nlive}</b> live &nbsp;·&nbsp; fold "
-            f"max <b>{int(live.max()) if live.size else 0}</b>, "
-            f"mean <b>{live.mean():.1f}</b> &nbsp;·&nbsp; "
+            f"<b>{int(live.min()) if live.size else 0}"
+            f"-{int(live.max()) if live.size else 0}</b>"
+            f" (mean <b>{live.mean():.1f}</b>) &nbsp;·&nbsp; "
             f"{int(grid.counts.sum())} traces</div>")
 
     def _on_tap(self, event):
@@ -1912,6 +2389,529 @@ def _info_md(g: Gathers) -> str:
     return "\n\n".join(lines)
 
 
+class VelocityPanel:
+    """Hand-picked velocity analysis on one CMP gather.
+
+    Three panels reading left to right, which is also the order the work
+    happens in: the gather, its semblance spectrum, and the gather with the
+    current pick's moveout removed.
+
+    Picking is by hand and only by hand. Tap the spectrum to add a ``(v, t)``
+    point, drag to move it, BACKSPACE to delete. The moveout panel follows
+    every drag, and it is the thing that decides whether a pick is right --
+    a flat event means yes and nothing else does. That loop, pick and look,
+    is the whole feature; an automatic picker would be answering the
+    question instead of showing it.
+
+    What comes out is the velocity file: ``time_s,velocity`` at the control
+    points, with the gather's location in a header comment if it was given.
+    It reads back in.
+
+    The input is a gather that was handed in, not one this class went and
+    found. A CMP gather from ``cmp.gather_in_bin``, from a SEG-Y sort, from
+    an array someone already has -- they are all the same thing here, and
+    the panel should not care which.
+    """
+
+    _PICK = "#d81b60"
+
+    def __init__(self, data, offsets, dt, t0=0.0, cmap="gray", perc=98.0,
+                 label="", x=None, y=None, height=430):
+        _ensure_ext()
+        self.data = np.asarray(data, dtype=np.float32)
+        if self.data.ndim != 2:
+            raise ValueError(f"expected a 2-D (ntrace, nt) gather, got "
+                             f"shape {self.data.shape}")
+        self.offsets = np.asarray(offsets, dtype=np.float32).reshape(-1)
+        if self.offsets.size != self.data.shape[0]:
+            raise ValueError(f"offsets has {self.offsets.size} entries but "
+                             f"the gather has {self.data.shape[0]} traces")
+        self.dt, self.t0 = float(dt), float(t0)
+        self.label, self.x, self.y = label, x, y
+        self.times = (self.t0 + np.arange(self.data.shape[1], dtype=np.float32)
+                      * self.dt)
+        self._spec = self._vgrid = None
+        self._busy = False
+
+        self.pane_cmp = ImagePane(xlabel="trace (offset-sorted)", cmap=cmap,
+                                  height=height)
+        self.pane_spec = ImagePane(xlabel="velocity (m/s)", cmap="rainbow",
+                                   height=height)
+        self.pane_nmo = ImagePane(xlabel="trace (offset-sorted)", cmap=cmap,
+                                  height=height)
+        self.panes = [self.pane_cmp, self.pane_nmo]   # the spectrum keeps its own
+
+        # the pick, on the spectrum
+        self._cds_line = ColumnDataSource(dict(x=[], y=[]))
+        self.pane_spec.figure.line("x", "y", source=self._cds_line,
+                                   line_width=2, line_color=self._PICK)
+        self.cds = ColumnDataSource(dict(x=[], y=[]))
+        r = self.pane_spec.figure.scatter("x", "y", source=self.cds, size=10,
+                                          fill_color=self._PICK, fill_alpha=0.9,
+                                          line_color="white", line_width=1.5)
+        self.pane_spec.figure.add_tools(
+            PointDrawTool(renderers=[r], description="pick velocities"))
+        self.cds.on_change("data", lambda a, o, n: self._on_pick())
+
+        # the stacked trace: one number per time, the pick's whole product
+        stack = figure(height=height, width=130, y_axis_location="right",
+                       x_axis_label="stack", y_axis_label="time (s)",
+                       tools="pan,wheel_zoom,reset", active_scroll="wheel_zoom")
+        stack.y_range.flipped = True
+        stack.toolbar.logo = None
+        stack.xaxis.ticker = []
+        self._cds_stack = ColumnDataSource(dict(x=[], y=[]))
+        stack.line("x", "y", source=self._cds_stack, line_width=1,
+                   line_color="#111111")
+        self.fig_stack = stack
+
+        self._perc = float(perc)
+        self._build_widgets()
+        self.note = pn.pane.HTML("", sizing_mode="stretch_width")
+        self.compute()
+
+    # ------------------------------------------------------------------ UI
+    def _build_widgets(self):
+        self.w_mute_on = pn.widgets.Checkbox(name="front mute", value=True, **_W)
+        self.w_mute_v = pn.widgets.FloatInput(name="mute v (m/s)", value=1500.0,
+                                              start=1.0, step=100.0, **_W)
+        self.w_mute_pad = pn.widgets.FloatInput(name="delay (s)", value=0.05,
+                                                start=0.0, step=0.01, **_W)
+        self.w_vmin = pn.widgets.FloatInput(name="v min", value=1400.0,
+                                            start=1.0, step=100.0, **_W)
+        self.w_vmax = pn.widgets.FloatInput(name="v max", value=4500.0,
+                                            start=2.0, step=100.0, **_W)
+        self.w_nv = pn.widgets.IntInput(name="n velocities", value=100,
+                                        start=2, end=600, step=10, **_W)
+        self.w_window = pn.widgets.IntInput(
+            name="semblance window", value=21, start=1, end=401, step=2, **_W,
+            description="samples; longer smooths the panel and blurs in time")
+        self.w_stretch = pn.widgets.FloatInput(
+            name="stretch mute", value=0.5, start=0.0, step=0.1, **_W,
+            description="drop samples stretched by more than this fraction")
+        self.w_clear = pn.widgets.Button(name="clear picks", **_W)
+        self.w_clear.on_click(lambda e: self.clear())
+        self.w_export = pn.widgets.FileDownload(
+            callback=self._export, filename="velocity.csv",
+            label="export velocity file", **_W)
+        self.w_import = pn.widgets.FileInput(accept=".csv,.txt", **_WFILE)
+        self.w_import.param.watch(self._import, "value")
+        for w in (self.w_mute_on, self.w_mute_v, self.w_mute_pad, self.w_vmin,
+                  self.w_vmax, self.w_nv, self.w_window, self.w_stretch):
+            w.param.watch(lambda e: self.compute(), "value")
+
+    # ------------------------------------------------------------ the work
+    def _prepared(self):
+        """The gather the analysis runs on: front-muted if that is on."""
+        if not self.w_mute_on.value:
+            return self.data
+        return _vel.front_mute(self.data, self.offsets, self.dt,
+                               float(self.w_mute_v.value), t0=self.t0,
+                               pad=float(self.w_mute_pad.value))
+
+    def compute(self):
+        """Draw the gather and (re)compute its velocity spectrum."""
+        if self._busy:
+            return
+        self._busy = True
+        try:
+            arr = self._prepared()
+            clim = robust_clim(arr, self._perc)
+            self.pane_cmp.update(arr, clim, y0=self.t0, dy=self.dt)
+            vmin, vmax = float(self.w_vmin.value), float(self.w_vmax.value)
+            if vmax <= vmin:
+                self.note.object = ("<div style='font-size:12px;color:#b45309'>"
+                                    "v max must be greater than v min</div>")
+                return
+            self._spec, self._vgrid = _vel.velocity_spectrum(
+                arr, self.offsets, self.dt, t0=self.t0, vmin=vmin, vmax=vmax,
+                nv=int(self.w_nv.value), window=int(self.w_window.value),
+                stretch_mute=float(self.w_stretch.value))
+            dv = (vmax - vmin) / max(int(self.w_nv.value) - 1, 1)
+            self.pane_spec.update(self._spec,
+                                  (0.0, float(self._spec.max()) or 1.0),
+                                  x0=vmin, dx=dv, y0=self.t0, dy=self.dt)
+            self._refresh_note()
+        finally:
+            self._busy = False
+        self._on_pick()
+
+    def velocity_function(self) -> np.ndarray:
+        """The current pick as v(t) on the gather's own time axis.
+
+        Control points are interpolated and held flat beyond the ends.
+        Outside the range you picked there is no information, and
+        extrapolating the trend would invent some.
+        """
+        d = self.cds.data
+        ts, vs = np.asarray(d["y"], float), np.asarray(d["x"], float)
+        if ts.size == 0:
+            mid = 0.5 * (float(self.w_vmin.value) + float(self.w_vmax.value))
+            return np.full(self.times.size, mid, np.float32)
+        order = np.argsort(ts)
+        ts, vs = ts[order], vs[order]
+        return np.interp(self.times, ts, vs, left=vs[0],
+                         right=vs[-1]).astype(np.float32)
+
+    def _on_pick(self):
+        """A pick moved: redraw the v(t) line, the moveout panel, the stack."""
+        v_t = self.velocity_function()
+        self._cds_line.data = dict(x=[float(v) for v in v_t],
+                                   y=[float(t) for t in self.times])
+        arr = self._prepared()
+        clim = robust_clim(arr, self._perc)
+        corrected = _vel.nmo(arr, self.offsets, v_t, self.dt, t0=self.t0,
+                             stretch_mute=float(self.w_stretch.value))
+        self.pane_nmo.update(corrected, clim, y0=self.t0, dy=self.dt)
+        stacked = _vel.nmo_stack(arr, self.offsets, v_t, self.dt, t0=self.t0,
+                                 stretch_mute=float(self.w_stretch.value))
+        peak = float(np.abs(stacked).max()) or 1.0
+        self._cds_stack.data = dict(x=[float(v) / peak for v in stacked],
+                                    y=[float(t) for t in self.times])
+        self._refresh_note()
+
+    def clear(self):
+        self.cds.data = dict(x=[], y=[])
+
+    def picks(self):
+        """``(times, velocities)`` of the control points, in time order."""
+        d = self.cds.data
+        ts, vs = np.asarray(d["y"], float), np.asarray(d["x"], float)
+        order = np.argsort(ts)
+        return ts[order], vs[order]
+
+    def _refresh_note(self):
+        n = len(self.cds.data["x"])
+        where = ""
+        if self.x is not None and self.y is not None:
+            where = f" at ({self.x:.1f}, {self.y:.1f})"
+        head = f"<b>{self.label}</b>{where} &nbsp;·&nbsp; " if self.label or where else ""
+        self.note.object = (
+            f"<div style='font-size:12px;color:#5f6368'>{head}fold "
+            f"<b>{self.data.shape[0]}</b> &nbsp;·&nbsp; offsets "
+            f"<b>{self.offsets.min():.0f}-{self.offsets.max():.0f}</b>"
+            f" &nbsp;·&nbsp; <b>{n}</b> pick{'' if n == 1 else 's'}"
+            + ("" if n else " &nbsp;·&nbsp; tap the spectrum to start"))
+
+    # -------------------------------------------------------------- files
+    def _export(self):
+        import io
+        buf = io.StringIO()
+        buf.write("# gathervis velocity picks\n")
+        if self.label:
+            buf.write(f"# gather: {self.label}\n")
+        if self.x is not None and self.y is not None:
+            buf.write(f"# x: {self.x:.4f}\n# y: {self.y:.4f}\n")
+        buf.write("time_s,velocity\n")
+        for t, v in zip(*self.picks()):
+            buf.write(f"{t:.6f},{v:.2f}\n")
+        buf.seek(0)
+        return buf
+
+    def _import(self, event):
+        raw = event.new
+        if isinstance(raw, dict):
+            raw = next(iter(raw.values()), None)
+        if not raw:
+            return
+        if isinstance(raw, bytes):
+            raw = raw.decode("utf-8", "replace")
+        ts, vs = [], []
+        for row in raw.splitlines():
+            row = row.strip()
+            if not row or row.startswith("#") or row.lower().startswith("time"):
+                continue
+            parts = row.replace(",", " ").split()
+            if len(parts) < 2:
+                continue
+            try:
+                ts.append(float(parts[0]))
+                vs.append(float(parts[1]))
+            except ValueError:
+                continue
+        if not ts:
+            self.note.object = ("<div style='font-size:12px;color:#b45309'>"
+                                "no time,velocity rows in that file</div>")
+            return
+        self.cds.data = dict(x=[float(v) for v in vs], y=[float(t) for t in ts])
+
+    # --------------------------------------------------------------- cards
+    def cards(self, sidebar=False):
+        return [
+            pn.Card(self.w_mute_on, pn.Row(self.w_mute_v, self.w_mute_pad, **_W),
+                    _hint("the direct wave is strong, perfectly coherent and "
+                          "not a reflection, so it puts a bright low-velocity "
+                          "smear across the shallow spectrum"),
+                    title="Front mute", **_card_style(sidebar)),
+            pn.Card(pn.Row(self.w_vmin, self.w_vmax, **_W),
+                    pn.Row(self.w_nv, self.w_window, **_W), self.w_stretch,
+                    title="Velocity spectrum", **_card_style(sidebar)),
+            pn.Card(_hint("point toolbar tool on the spectrum: tap adds a "
+                          "pick, drag moves it, tap-select + BACKSPACE "
+                          "deletes. Watch the moveout panel -- flat is right."),
+                    self.w_clear, self.w_export, self.w_import,
+                    title="Velocity picks", **_card_style(sidebar)),
+        ]
+
+    def panel(self, tools=True):
+        def col(title, pane):
+            return pn.Column(
+                pn.pane.HTML(f"<b style='font-size:12px'>{title}</b>"),
+                pane.figure, pane.readout, sizing_mode="stretch_width")
+        row = pn.Row(col("CMP gather", self.pane_cmp),
+                     col("velocity spectrum", self.pane_spec),
+                     col("moveout corrected", self.pane_nmo),
+                     pn.Column(pn.pane.HTML("<b style='font-size:12px'>stack"
+                                            "</b>"), self.fig_stack, margin=0),
+                     sizing_mode="stretch_width")
+        items = [self.note, row]
+        if tools:
+            items.append(pn.FlexBox(*self.cards()))
+        return pn.Column(*items, sizing_mode="stretch_width")
+
+
+def velocity_analysis(gather, offsets=None, dt=None, t0=0.0, cmap="gray",
+                      perc=98.0, label="", x=None, y=None, port=None,
+                      address="127.0.0.1", title="gathervis velocity",
+                      verbose=True):
+    """Open velocity analysis on one CMP gather.
+
+        from gathervis import cmp, survey
+        import gathervis as gv
+
+        grid = survey.fold(ds.geometry)
+        cg = cmp.gather_in_bin(ds, grid, ix, iy)
+        gv.velocity_analysis(cg, port=8080)
+
+    Parameters
+    ----------
+    gather : CmpGather | (ntrace, nt) array
+        A ``CmpGather`` carries its own offsets and bin location, so those
+        arguments can be left out. Any other 2-D array works too, given
+        ``offsets`` and ``dt``.
+    offsets, dt : optional
+        Required unless ``gather`` supplies them.
+    port : int, optional
+        Serve blocking on ``address:port``; ``None`` returns the Panel app.
+
+    Returns the :class:`VelocityPanel` when served, so the picks are still
+    reachable afterwards, and the Panel app when not.
+    """
+    if hasattr(gather, "offsets") and hasattr(gather, "data"):    # CmpGather
+        offsets = gather.offsets if offsets is None else offsets
+        if x is None:
+            x, y = getattr(gather, "x", None), getattr(gather, "y", None)
+        if not label:
+            label = f"bin {gather.ix}, {gather.iy}"
+        gather = gather.data
+    if offsets is None:
+        raise ValueError("offsets= is required for a plain array")
+    if dt is None:
+        raise ValueError("dt= is required")
+
+    vp = VelocityPanel(gather, offsets, dt, t0=t0, cmap=cmap, perc=perc,
+                       label=label, x=x, y=y)
+    app = pn.Column(vp.panel(tools=False),
+                    pn.FlexBox(*vp.cards()), sizing_mode="stretch_width")
+    if port is None:
+        return app
+    port = _resolve_port(port, address)
+    if verbose:
+        _banner(port)
+    pn.serve(lambda: app, port=port, address=address, show=False, title=title,
+             websocket_origin="*")
+    return vp
+
+
+# ---------------------------------------------------------------------------
+# views: one per tab, registered rather than branched on
+# ---------------------------------------------------------------------------
+class _View(_state.View):
+    """A tab, and what the session needs to know to place it.
+
+    ``applies`` is what replaces the chain of ``if`` statements the workspace
+    used to be: each view says for itself whether this dataset has what it
+    needs, and the workspace just asks all of them. Adding a view means
+    adding a class to ``VIEWS``, not editing the workspace in four places.
+
+    Views never hold references to each other. A view that changes the
+    selection writes ``session.cursor``; a view that cares reads it. That is
+    why the layout map can move the shot browser without either one knowing
+    the other exists.
+    """
+
+    title = "view"          # tab label
+    cards = ()              # tool cards, hosted in the sidebar
+
+    @staticmethod
+    def applies(g) -> bool:
+        return True
+
+    def __init__(self, **kw):
+        self.opts = kw
+        self.session = None
+        # A seam, deliberately visible: the two volume tabs redraw through
+        # logic that still lives on the workspace, because it needs the
+        # "too large to process" note and the size guard that go with it.
+        # Everything else about them is here. See docs/todo.md.
+        self._refresh_hook = None
+
+    def panes(self):
+        """Image panes that share the display-mode / colormap controls."""
+        return []
+
+    def tool_cards(self, sidebar=True):
+        return []
+
+
+class GatherView(_View):
+    """The shot browser: one shot at a time as a 2-D (trace, time) panel."""
+
+    name = "gather"
+    title = "Shot gathers"
+
+    @staticmethod
+    def applies(g):
+        return "shot" in g.axes
+
+    def attach(self, session):
+        self.session = session
+        self.browser = ShotBrowser(session.data, session.state,
+                                   cmap=self.opts.get("cmap", "gray"),
+                                   tools=self.opts.get("tools", "sidebar"))
+        # Selection flows through the cursor in both directions. The cursor
+        # only announces real changes, so the two cannot chase each other.
+        self.browser.on_shot_change.append(
+            lambda i: setattr(session.cursor, "shot", i))
+        session.cursor.on_change(
+            lambda what: self.browser.set_shot(session.cursor.shot)
+            if what == "shot" else None)
+
+    def panel(self):
+        return self.browser.panel()
+
+    def panes(self):
+        return list(self.browser.panes)
+
+    def tool_cards(self, sidebar=True):
+        return self.browser.tool_cards() if sidebar else []
+
+    def refresh(self, stage=_state.DATA):
+        self.browser.redraw()
+
+
+class GeometryView(_View):
+    """The acquisition map, with the CMP fold of the same survey under it.
+
+    Two answers to one question -- where the survey is, and how well it
+    covers -- and they belong on the same screen: a hole in the fold map is
+    a gap in the layout directly above it, and on separate tabs you have to
+    remember one while looking at the other.
+    """
+
+    name = "geometry"
+    title = "Geometry"
+
+    @staticmethod
+    def applies(g):
+        return g.geometry is not None
+
+    def attach(self, session):
+        self.session = session
+        geo = session.data.geometry
+        self.map = LayoutMap(geo)
+        self.map.on_pick = self._picked
+        self.fold = FoldMap(geo, height=420)
+        self.fold.on_pick = lambda ix, iy: setattr(session.cursor, "bin",
+                                                   (ix, iy))
+        session.cursor.on_change(
+            lambda what: self.map.set_active(session.cursor.shot)
+            if what == "shot" else None)
+        self.map.set_active(session.cursor.shot)
+
+    def _picked(self, i):
+        self.session.cursor.shot = int(i)
+        self.session.focus("gather")       # ... and show it
+
+    def panel(self):
+        return pn.Column(
+            pn.pane.HTML("<b style='font-size:12px'>acquisition layout</b>"),
+            self.map.figure,
+            pn.layout.Divider(margin=(16, 0, 8, 0)),
+            pn.pane.HTML("<b style='font-size:12px'>CMP fold</b>"),
+            self.fold.panel(),
+            sizing_mode="stretch_width")
+
+
+class ShotVolumeView(_View):
+    """The current shot as a cuboid: the one place a 3-D shot reads as one.
+
+    It follows the shot slider rather than owning one -- the 2-D panel is
+    the working view and this is the second opinion, so having two shot
+    controls that could disagree would be worse than having none here.
+    """
+
+    name = "shot_volume"
+    title = "Shot volume"
+
+    @staticmethod
+    def applies(g):
+        return g.data.ndim == 4
+
+    def attach(self, session):
+        self.session = session
+        g = session.data
+        self.volume = VolumeView3D(g.shot(0), names=g.axes[1:3], dt=g.dt,
+                                   t0=g.t0, cmap=self.opts.get("cmap", "gray"),
+                                   clim=session.state["clim"])
+        session.cursor.on_change(
+            lambda what: self.refresh() if what == "shot" else None)
+
+    def panel(self):
+        return self.volume.panel()
+
+    def panes(self):
+        return [self.volume]
+
+    def refresh(self, stage=_state.DATA):
+        if self._refresh_hook is not None:
+            self._refresh_hook()
+
+
+class SlicesView(_View):
+    """A 3-D volume as a cuboid with movable slice planes."""
+
+    name = "slices"
+    title = "Volume slices"
+
+    @staticmethod
+    def applies(g):
+        return g.data.ndim == 3
+
+    def attach(self, session):
+        self.session = session
+        g = session.data
+        vertical = "depth (m)" if g.axes[-1] == "depth" else "time (s)"
+        self.volume = VolumeView3D(g.data, names=tuple(g.axes[:-1]), dt=g.dt,
+                                   t0=g.t0, cmap=self.opts.get("cmap", "gray"),
+                                   clim=session.state["clim"],
+                                   vertical=vertical)
+
+    def panel(self):
+        return self.volume.panel()
+
+    def panes(self):
+        return [self.volume]
+
+    def refresh(self, stage=_state.DATA):
+        if self._refresh_hook is not None:
+            self._refresh_hook()
+
+
+# The registry. Order here is tab order.
+VIEWS = (GatherView, GeometryView, ShotVolumeView, SlicesView)
+
+
 class Workspace:
     """Sidebar (dataset info + display controls) + tabbed views.
 
@@ -1921,73 +2921,70 @@ class Workspace:
     """
 
     def __init__(self, g: Gathers, cmap="gray", perc=98.0, view=None,
-                 tools="sidebar", keys=True):
+                 tools="sidebar", keys=True, views=None):
         _ensure_ext()
         self.g = g
         self._synced = False
         self._tools_sidebar = tools == "sidebar"
         self._tool_cards = []          # cards hosted in the sidebar
         self._tool_tabs = set()        # tab indices those cards apply to
-        symmetric = g.axes[-1] != "depth"   # property volumes: min/max-style
-        self.state = {"sample": g.sample(), "clim": None,
-                      "symmetric": symmetric, "perc": perc}
-        self.state["clim"] = robust_clim(self.state["sample"], perc,
-                                         symmetric=symmetric)
+        # The session owns the shared display settings; `state` is its dict
+        # view, so everything written against the old dict keeps working
+        # while the stages it announces drive the caches underneath.
+        self.session = _state.Session(g, cmap=cmap, perc=perc)
+        self.state = self.session.state
         self._panes, self._redraws, tabs = [], [], []
         self.map = None
         self._shot_tab = None
 
-        # -- tab 1: shot browsing -----------------------------------------
-        if "shot" in g.axes:
-            self.browser = ShotBrowser(g, self.state, cmap=cmap, tools=tools)
-            self._panes += self.browser.panes
+        # Every view says for itself whether this dataset has what it needs,
+        # so the workspace asks all of them instead of branching on shape
+        # and geometry five times. Adding a view is adding a class to VIEWS.
+        self.session.on_focus(self._focus_view)
+        self._view_tabs = {}
+        # `views=` is the explicit layer asking for exactly these, in this
+        # order; without it every view that fits the data goes in. Either
+        # way the loop is the same, which is the point of the registry.
+        wanted = VIEWS if views is None else tuple(views)
+        for item in wanted:
+            v = item if isinstance(item, _View) else item(cmap=cmap, tools=tools)
+            if not type(v).applies(g):
+                if views is None:
+                    continue                  # automatic: skip what does not fit
+                raise ValueError(
+                    f"{type(v).__name__} needs something this dataset does "
+                    f"not have (axes={g.axes}, geometry="
+                    f"{'yes' if g.geometry is not None else 'no'})")
+            v.opts.setdefault("cmap", cmap)
+            v.opts.setdefault("tools", tools)
+            v = self.session.add(v)
+            self._view_tabs[v.name] = len(tabs)
+            self._panes += v.panes()
+            tabs.append((v.title, v.panel()))
+
+        # Names the rest of the workspace and its users reach for.
+        self.browser = getattr(self.session.view("gather"), "browser", None)
+        self.map = getattr(self.session.view("geometry"), "map", None)
+        self.fold = getattr(self.session.view("geometry"), "fold", None)
+        sv = self.session.view("shot_volume")
+        self.shot_volume = getattr(sv, "volume", None)
+        sl = self.session.view("slices")
+        self.slices = getattr(sl, "volume", None)
+        self._shot_tab = self._view_tabs.get("gather")
+
+        if self.browser is not None:
             self._redraws.append(self.browser.redraw)
-            self._shot_tab = len(tabs)
-            tabs.append(("Shot gathers", self.browser.panel()))
             if self._tools_sidebar:
                 cards = self.browser.tool_cards()
                 if cards:
                     self._tool_cards = cards
                     self._tool_tabs.add(self._shot_tab)
-
-        # -- tab 2: geometry (acquisition layout) --------------------------
-        if g.geometry is not None:
-            self.map = LayoutMap(g.geometry)
-            self.map.on_pick = self._pick_shot
-            self.browser.on_shot_change.append(self.map.set_active)
-            self.map.set_active(self.browser.ishot)
-            tabs.append(("Geometry", pn.Column(self.map.figure,
-                                               sizing_mode="stretch_width")))
-
-        # -- tab 3: CMP fold -----------------------------------------------
-        # Geometry only, so it costs the same whatever the data weighs.
-        if g.geometry is not None:
-            self.fold = FoldMap(g.geometry)
-            tabs.append(("Fold", self.fold.panel()))
-
-        # -- tab 4: the current shot as a cuboid (4-D data) ----------------
-        # The 2-D panel above is the working view; this is the one place a
-        # single 3-D shot is worth looking at as a volume, so it follows the
-        # shot slider rather than owning one.
-        if g.data.ndim == 4:
-            self.shot_volume = VolumeView3D(g.shot(0), names=g.axes[1:3],
-                                            dt=g.dt, t0=g.t0, cmap=cmap,
-                                            clim=self.state["clim"])
-            self._panes.append(self.shot_volume)
+        if sv is not None:
+            sv._refresh_hook = self._redraw_shot_volume
             self._redraws.append(self._redraw_shot_volume)
-            self.browser.on_shot_change.append(
-                lambda _i: self._redraw_shot_volume())
-            tabs.append(("Shot volume", self.shot_volume.panel()))
-
-        # -- tab 5: volume cuboid + slice planes (3-D data) -----------------
-        if g.data.ndim == 3:
-            vlab = "depth (m)" if g.axes[-1] == "depth" else "time (s)"
-            self.slices = VolumeView3D(g.data, names=tuple(g.axes[:-1]),
-                                       dt=g.dt, t0=g.t0, cmap=cmap,
-                                       clim=self.state["clim"], vertical=vlab)
-            self._panes.append(self.slices)
+        if sl is not None:
+            sl._refresh_hook = self._redraw_slices
             self._redraws.append(self._redraw_slices)
-            tabs.append(("Volume slices", self.slices.panel()))
 
         # -- single 2-D gather ---------------------------------------------
         if g.data.ndim == 2:
@@ -2020,23 +3017,27 @@ class Workspace:
                     help_body)))
 
         self.tabs = pn.Tabs(*tabs, sizing_mode="stretch_width")
-        if view == "slices":
-            for i, (label, _) in enumerate(tabs):
-                if label == "Volume slices":
-                    self.tabs.active = i
+        if view is not None and view in self._view_tabs:
+            self.tabs.active = self._view_tabs[view]
 
         # The tool cards belong to the 2-D gather panel, so they are hidden
         # on the Geometry / Volume-slices tabs. Toggling one container (not
         # each card) keeps every card's collapsed state and the gesture
         # cheat-sheet's own visibility intact across tab switches.
-        self._tools_box = None
-        if self._tool_cards:
-            self._tools_box = pn.Column(*self._tool_cards,
-                                        sizing_mode="stretch_width",
-                                        visible=self.tabs.active in self._tool_tabs)
+        #
+        # There is one box per group of cards rather than one overall,
+        # because the shot-gather tools and the velocity tools belong to
+        # different tabs and must not appear on each other's.
+        self._tool_boxes = []
+        for cards, tabset in ((self._tool_cards, self._tool_tabs),):
+            if not cards:
+                continue
+            box = pn.Column(*cards, sizing_mode="stretch_width",
+                            visible=self.tabs.active in tabset)
             self.tabs.param.watch(
-                lambda e: setattr(self._tools_box, "visible",
-                                  e.new in self._tool_tabs), "active")
+                lambda e, box=box, tabset=tabset: setattr(
+                    box, "visible", e.new in tabset), "active")
+            self._tool_boxes.append(box)
         self._controls = self._make_controls(cmap, perc)
         self._key_docs = set()
         self._keychan = self._keys_js = None
@@ -2135,11 +3136,16 @@ class Workspace:
         if self._w_perc.value != self.state["perc"]:
             _set_throttled(self._w_perc, self._w_perc.value)
 
+    def _focus_view(self, name: str):
+        """A view asked to be shown: switch to its tab if it has one."""
+        tab = self._view_tabs.get(name)
+        if tab is not None and getattr(self, "tabs", None) is not None:
+            self.tabs.active = tab
+
     def _pick_shot(self, i: int):
-        """Layout-map tap: select the shot and jump to the shot-gather tab."""
-        self.browser.set_shot(i)
-        if self._shot_tab is not None:
-            self.tabs.active = self._shot_tab
+        """Select a shot and show it. Kept as the public way in."""
+        self.session.cursor.shot = int(i)
+        self._focus_view("gather")
 
     def _draw2d(self):
         arr, clim = _process_gather(self.g.data, self.g.dt, self.state)
@@ -2286,9 +3292,9 @@ class Workspace:
 
     def sidebar(self):
         items = [pn.pane.Markdown(_info_md(self.g)), *self._controls]
-        if self._tools_box is not None:
-            items += [pn.layout.Divider(margin=(12, 0, 4, 0)),
-                      self._tools_box]
+        if self._tool_boxes:
+            items.append(pn.layout.Divider(margin=(12, 0, 4, 0)))
+            items += self._tool_boxes
         if self._keychan is not None:
             items.append(self._keychan)  # invisible; must be in the layout
         return items
@@ -2358,6 +3364,151 @@ def _banner(port):
 [gathervis] (tip: VS Code Remote-SSH / Jupyter forward ports automatically)""")
 
 
+
+# ---------------------------------------------------------------------------
+# the explicit layer: build a session and put views in it
+# ---------------------------------------------------------------------------
+def _as_gathers(obj, axes=None, dt=1.0, t0=0.0, src=None, rec=None,
+                shape=None, dtype="float32", name=None) -> Gathers:
+    """Whatever the caller had -> a Gathers. Shared by show() and session()."""
+    if isinstance(obj, (str, bytes)) or hasattr(obj, "__fspath__"):
+        if shape is None:
+            raise ValueError("shape= is required when opening a raw binary file")
+        return from_file(obj, shape, dtype=dtype, axes=axes, dt=dt, t0=t0,
+                         src=src, rec=rec, name=name)
+    if not isinstance(obj, Gathers):
+        return from_array(obj, src=src, rec=rec, axes=axes, dt=dt, t0=t0,
+                          name=name)
+    if name is not None:
+        obj.name = name
+    return obj
+
+
+def _serve(ws, port=None, address="127.0.0.1", title="gathervis", verbose=True):
+    """Serve a built workspace, or hand back the Panel app when port is None."""
+    if port is None:
+        return ws.panel()
+    port = _resolve_port(port, address)
+    if verbose:
+        _banner(port)
+    # Served as a factory, not as a finished object: pn.state.location only
+    # exists inside a session, so the URL binding has to happen here rather
+    # than while the Workspace is being built.
+    tmpl = ws.template(title)
+
+    def _open():
+        ws.bind_keys()
+        ws.sync_location()
+        return tmpl
+
+    pn.serve(_open, port=port, address=address, show=False, title=title,
+             websocket_origin="*")
+
+
+def session(obj, axes=None, dt=1.0, t0=0.0, src=None, rec=None, shape=None,
+            dtype="float32", name=None, cmap="gray", perc=98.0,
+            tools="sidebar", views=None, keys=None):
+    """A viewer you compose yourself, rather than one chosen for you.
+
+        s = gv.session(data)
+        s.add(gv.gather())
+        s.add(gv.geometry())
+        s.show(port=8080)
+
+    :func:`show` is this function with the view list filled in for you --
+    every view that the data supports, in the usual order. Reach for this one
+    when that is not what you want: fewer tabs, a different order, or a view
+    the automatic choice would not have included.
+
+    ``views`` accepts the classes or instances to add; omit it to start empty
+    and use ``.add()``. Views are in ``gathervis.viewer.VIEWS``, and each is
+    also a plain function here -- :func:`gather`, :func:`geometry`,
+    :func:`fold`, :func:`shot_volume`, :func:`slices`.
+
+    Returns a :class:`Composer`: a session with ``add``, ``panel`` and
+    ``show`` on it.
+    """
+    obj = _as_gathers(obj, axes=axes, dt=dt, t0=t0, src=src, rec=rec,
+                      shape=shape, dtype=dtype, name=name)
+    comp = Composer(obj, cmap=cmap, perc=perc, tools=tools, keys=keys)
+    for v in (views or ()):
+        comp.add(v)
+    return comp
+
+
+class Composer:
+    """A session plus the plumbing that turns its views into a viewer.
+
+    Kept apart from ``Workspace`` on purpose: a workspace decides which views
+    a dataset gets, and this decides nothing -- it shows what it was given,
+    in the order it was given. The shared display controls, the sidebar, the
+    URL sync and the keyboard are the same either way, so they live in
+    ``Workspace`` and this drives it once the view list is settled.
+    """
+
+    def __init__(self, data, cmap="gray", perc=98.0, tools="sidebar",
+                 keys=None):
+        self.data = data
+        self._opts = dict(cmap=cmap, perc=perc, tools=tools, keys=keys)
+        self._views = []
+        self._built = None
+
+    def add(self, view):
+        """Add a view -- a class, or an instance with options set."""
+        if self._built is not None:
+            raise RuntimeError("add views before the viewer is built")
+        self._views.append(view)
+        return self
+
+    def build(self) -> "Workspace":
+        """The workspace holding exactly the views that were added."""
+        if self._built is None:
+            keys = self._opts["keys"]
+            self._built = Workspace(
+                self.data, cmap=self._opts["cmap"], perc=self._opts["perc"],
+                tools=self._opts["tools"], keys=bool(keys),
+                views=self._views or None)
+        return self._built
+
+    @property
+    def session(self):
+        return self.build().session
+
+    def panel(self):
+        return self.build().panel()
+
+    def show(self, port=None, address="127.0.0.1", title="gathervis",
+             verbose=True):
+        """Serve it, or return the Panel app when ``port`` is None."""
+        return _serve(self.build(), port=port, address=address, title=title,
+                      verbose=verbose)
+
+    def __repr__(self):
+        names = [getattr(v, "name", getattr(v, "__name__", "?"))
+                 for v in self._views]
+        return f"Composer({self.data!r}, views={names})"
+
+
+def gather(**kw):
+    """The shot browser, as a view to put in a session."""
+    return GatherView(**kw)
+
+
+def geometry(**kw):
+    """The acquisition map, as a view to put in a session."""
+    return GeometryView(**kw)
+
+
+def shot_volume(**kw):
+    """The current shot as a cuboid, as a view to put in a session."""
+    return ShotVolumeView(**kw)
+
+
+def slices(**kw):
+    """A volume with slice planes, as a view to put in a session."""
+    return SlicesView(**kw)
+
+
 def show(obj, axes=None, view=None, dt=1.0, t0=0.0, src=None, rec=None,
          shape=None, dtype="float32", name=None, cmap="gray", perc=98.0,
          port=None, address="127.0.0.1", title="gathervis", verbose=True,
@@ -2399,16 +3550,8 @@ def show(obj, axes=None, view=None, dt=1.0, t0=0.0, src=None, rec=None,
         raise ValueError("view must be None, 'browse' or 'slices'")
     if tools not in ("sidebar", "below"):
         raise ValueError("tools must be 'sidebar' or 'below'")
-    if isinstance(obj, (str, bytes)) or hasattr(obj, "__fspath__"):
-        if shape is None:
-            raise ValueError("shape= is required when opening a raw binary file")
-        obj = from_file(obj, shape, dtype=dtype, axes=axes, dt=dt, t0=t0,
-                        src=src, rec=rec, name=name)
-    elif not isinstance(obj, Gathers):
-        obj = from_array(obj, src=src, rec=rec, axes=axes, dt=dt, t0=t0,
-                         name=name)
-    elif name is not None:
-        obj.name = name
+    obj = _as_gathers(obj, axes=axes, dt=dt, t0=t0, src=src, rec=rec,
+                      shape=shape, dtype=dtype, name=name)
     t_data = time.perf_counter()
 
     ws = Workspace(obj, cmap=cmap, perc=perc, view=view, tools=tools,
@@ -2418,20 +3561,4 @@ def show(obj, axes=None, view=None, dt=1.0, t0=0.0, src=None, rec=None,
         print(f"[gathervis] dataset {tuple(obj.shape)} ready in "
               f"{t_data - t_start:.2f}s | app built in {t_app - t_data:.2f}s")
 
-    if port is None:
-        return ws.panel()
-    port = _resolve_port(port, address)
-    if verbose:
-        _banner(port)
-    # Served as a factory, not as a finished object: pn.state.location only
-    # exists inside a session, so the URL binding has to happen here rather
-    # than while the Workspace is being built.
-    tmpl = ws.template(title)
-
-    def _session():
-        ws.bind_keys()
-        ws.sync_location()
-        return tmpl
-
-    pn.serve(_session, port=port, address=address, show=False,
-             title=title, websocket_origin="*")
+    return _serve(ws, port=port, address=address, title=title, verbose=verbose)

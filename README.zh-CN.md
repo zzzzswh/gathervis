@@ -37,7 +37,8 @@
 * **观测系统联动可视化。** 给出炮点/检波点坐标就有 Geometry 页和 Fold 页——点任意
   炮点直接跳到它的炮集，激活炮的排列同步高亮；CMP 覆盖次数只用坐标就能算。
 * **内置 QC 工具。** wiggle / 变密度显示与行业色标、零相位 Ormsby 滤波、
-  AGC / 道均衡、画窗算谱（振幅谱 + f-k）、手动 / STA-LTA 自动初至拾取。
+  AGC / 道均衡、画窗算谱（振幅谱 + f-k）、手动 / STA-LTA 自动初至拾取，
+  可跨道集保持的顶/底切除，以及手工 CMP 速度分析。
 * **cigvis 风格的三维视图。** 数据体可渲染为可旋转的长方体 + 三个实时切片平面
   （WebGL）。
 * **简单好用。** 只要一个浏览器：单端口服务，VS Code Remote-SSH 自动转发端口，
@@ -46,10 +47,23 @@
 ## 安装
 
 ```bash
-pip install -e .            # numpy + panel + bokeh + plotly
-pip install deepwave        # 可选，跑正演示例用（会拉 torch）
-pip install segyio          # 可选，SEG-Y 导入
+pip install -e .                  # numpy + panel + bokeh + plotly
+pip install -e ".[segy]"          # 可选，SEG-Y 导入
+pip install -e ".[examples]"      # 可选，torch + deepwave，跑正演示例用，约 2.5 GB
 ```
+
+用 uv 的话 extra 名字一样：
+
+```bash
+uv sync                           # 查看器本体
+uv sync --extra examples          # 加上 torch/deepwave，跑 examples/deepwave_*.py
+uv run --extra examples examples/deepwave_line2d.py    # 或者只为这一次运行装
+```
+
+`pyproject.toml` 里把 torch 钉在了 cu121 索引（本地开发用）。没有 GPU、或者想
+少下点东西，给 uv 指 CPU 索引：
+`--index https://download.pytorch.org/whl/cpu`。只有那两个 `deepwave_*` 示例
+需要这些，其余一切都只靠四个基础依赖。
 
 ## 快速上手
 
@@ -79,6 +93,9 @@ gathervis vel.npy --axes x y depth --dt 10 --cmap rainbow
 ```
 
 这里有几个用合成数据的示例：`python examples/quickstart.py` 直接服务一个解析合成数据；
+`python examples/velocity_picking.py` 在一个已知答案的 CMP 道集上打开速度分析；
+`python examples/velocity_analysis.py` 在一个答案已知的模型上跑完整条速度分析链，
+并把拾取结果与真值逐层对照打印（第一个参数给 `report` 则不开浏览器）；
 `python examples/deepwave_line2d.py` 用 [deepwave](https://github.com/ar4/deepwave)
 正演一条二维测线；`python examples/deepwave_lines3d.py` 在一个丰富的三维速度模型
 （倾斜层 + 背斜穹隆 + 低速河道透镜体）上用 deepwave 的三维引擎**打五条二维测线**，
@@ -127,6 +144,10 @@ Shot gathers 页，该炮的排列在图上高亮。
 
 ### CMP 覆盖次数图
 
+在 **Geometry** 页的观测系统图下面——同一套观测系统问两遍，覆盖上的空洞就是
+正上方排列图里的缺口。摘要行给出网格、活动面元数和覆盖次数范围。
+
+
 **Fold** 页对每个炮检对的中点做矩形装箱并计数。
 
 <img src="https://raw.githubusercontent.com/zzzzswh/gathervis/main/docs/images/fold.png" width="520" alt="正交陆上三维的 CMP 覆盖次数图，中间满覆盖、边缘羽化"/>
@@ -149,21 +170,135 @@ grid.counts                                  # (ny, nx) 每个 bin 的道数
 grid.nlive, grid.extent, grid.bin_of(x, y)
 ```
 
-点击某个 bin 会选中并勾出它。该 bin 的偏移距-方位分布可由同一模块计算，应用内
-的玫瑰图尚未实现：
+点击某个 bin 会选中并勾出它。背后的道索引——哪一炮的哪一道成像了这个
+bin——是 `traces_in_bin`；该 bin 的偏移距-
+方位分布出自同一模块，不过应用内的玫瑰图尚未实现：
 
 ```python
-from gathervis.survey import offsets_azimuths_in_bin, azimuth_sectors
+from gathervis.survey import (traces_in_bin, offsets_azimuths_in_bin,
+                              azimuth_sectors)
+shots, recs, offs = traces_in_bin(ds.geometry, grid, ix, iy)   # 按偏移距排序
 offs, azis, shots = offsets_azimuths_in_bin(ds.geometry, grid, ix, iy)
 edges, counts = azimuth_sectors(azis, nsector=24)   # 测量惯例，北 = 0
 ```
 
 `azimuth_sectors` 返回的非空扇区数即该 bin 的方位覆盖情况。
 
+### 顶切除与底切除
+
+道集面板上两个点工具，一条线一个：点击加节点，拖动移动，BACKSPACE 删除选中的。
+切除线画在**每一道**上，所以你看到的就是实际会被应用的那条线，而不只是你放下的
+几个手柄。打开 **apply mute** 看切除后的道集——看不到它切掉了什么，就判断不了
+线画得对不对。
+
+**线存的是偏移距，不是你放节点时那一列的列号。** 切除本来就是偏移距的函数，
+存偏移距，换到下一炮（道数不同、顺序不同）这条线依然是同一个切除，重排序面板
+也不会错位。没有观测系统时退回道号，这是诚实的但就没法在道集之间通用了。
+
+**一条线管所有，允许例外。** 作用域开关决定一次编辑写到哪里——*all gathers*
+改的是所有道集继承的默认线，*this gather* 给当前这一个单独一条。在某一道集上
+调好了想推给全部，用 *make this the default*；想撤掉某个例外，用 *revert to
+default*。面板上方的状态行随时告诉你当前用的是哪一条。道集之间不做任何插值：
+一个道集要么有自己的线，要么用默认线。
+
+导出的是 JSON，同一个文件在脚本里就能切除道集，不需要开界面：
+
+```python
+from gathervis.mute import Mutes, mute_shot
+
+mutes = Mutes.from_json(open("mutes.json").read())
+clean = mute_shot(ds, 7, mutes)        # 第 7 炮若有自己的线就用它自己的
+```
+
+底层部件对任意道集和它的偏移距都能用：
+
+```python
+from gathervis import mute
+
+top = mute.linear_line(v=1500., x_max=3000., pad=0.05)   # 一条直线切除
+out = mute.apply(gather, offsets, dt, top=top, taper=0.04)
+mute.evaluate(top, offsets)                              # 每道的切除时刻
+```
+
+缓坡不是装饰。硬切会沿着切除轨迹留下一道阶跃，而阶跃是走在相干路径上的宽带
+能量——它会在谱和叠加里以一个地下根本没有的同相轴的形式回来。
+
+### 速度分析
+
+```python
+from gathervis import cmp, survey
+import gathervis as gv
+
+grid = survey.fold(ds.geometry)
+cg = cmp.gather_in_bin(ds, grid, ix, iy)
+gv.velocity_analysis(cg, dt=ds.dt, port=8080)
+```
+
+三个面板从左到右，也就是干活的顺序：CMP 道集、它的相似度速度谱、按当前拾取
+做完动校正的道集——再加上这一切叠加出来的那一道。
+
+拾取靠手。在速度谱上点击加一个 `(v, t)` 点，拖动调整，BACKSPACE 删除。
+**一边拖一边看动校正面板**：速度偏低，远偏移距端同相轴会上翘；偏高则下弯；
+对了就是平的。这是判断拾取对错的唯一办法，也是这两个面板并排放的理由。
+**没有自动拾取，这是刻意的**——查看器应该把答案摆给你看，而不是替你决定。
+
+*export velocity file* 导出 `time_s,velocity`，头部带道集位置，也能读回来。
+
+入口吃的是**传进来的**道集，不是面板自己去找的：`CmpGather`（自带偏移距和
+bin 位置）、SEG-Y 排序结果，或者任意 `(ntrace, nt)` 数组加上 `offsets=` 和
+`dt=`。
+
+`python examples/velocity_picking.py` 在一个已知答案的合成数据上打开它，并把
+答案打印出来，方便你对照自己拾的。
+
+底层部件也能单独用：
+
+```python
+from gathervis import velocity as vel
+
+clean = vel.front_mute(cg.data, cg.offsets, ds.dt, v=1500., pad=0.05)
+spec, v_grid = vel.velocity_spectrum(clean, cg.offsets, ds.dt, nv=100)
+flat = vel.nmo(clean, cg.offsets, v_t, ds.dt)
+trace = vel.nmo_stack(clean, cg.offsets, v_t, ds.dt)
+v_int = vel.dix(v_t, ds.times, smooth=51)       # 层速度
+```
+
+速度谱返回 `(nv, nt)`——速度坐在道号平时的位置上，时间和这里每一个面板一样放
+在最后一维。
+
+### 自己组装查看器
+
+`gv.show(data)` 会挑出数据支持的视图并排好。如果这不是你要的——想少几个 tab、
+换个顺序、或者只要一个面板——就自己搭：
+
+```python
+import gathervis as gv
+
+s = gv.session(data)
+s.add(gv.gather())        # 炮集浏览
+s.add(gv.geometry())      # 观测系统图
+s.show(port=8080)
+```
+
+或者一次写完，给出的顺序就是 tab 顺序：
+
+```python
+gv.session(data, views=[gv.fold(), gv.gather()]).show(port=8080)
+```
+
+可用的视图是 `gather`、`geometry`、`fold`、`shot_volume`、`slices`，而
+`gv.show()` 就是把这个列表替你填好的同一件事。显式要一个数据支持不了的视图
+（没有坐标却要观测系统图）会直接报错，而不是悄悄少一个 tab。
+
+两层共享其余一切：显示控件、侧栏、URL 同步、键盘。选择状态也共享，走的是
+session 的游标而不是视图之间直连——在图上点炮点和拖动炮号滑块是同一件事的两种
+说法，每个视图都能听到，而它们互相并不知道对方存在。
+
 ### 操作速查
 
 | 想做什么 | 怎么做 |
 | --- | --- |
+| 找回完整画面 | *⤾ whole*。视图本身就被锁在数据范围内，根本拖不出去 |
 | 画矩形窗 | 工具栏选中框选工具 → **SHIFT+拖拽**（或点一下、移动、再点一下） |
 | 画多边形窗 | 工具栏选中多边形工具 → 逐点点击加顶点，**双击或 ESC** 收尾 |
 | 移动 / 删除窗 | 直接拖动；点选后按 **BACKSPACE**（或点 *clear windows*） |
@@ -178,7 +313,9 @@ edges, counts = azimuth_sectors(azis, nsector=24)   # 测量惯例，北 = 0
 | 跳到某一炮 | 拖炮号滑条、*go to shot* 输入，或在 Geometry 页点炮点 |
 | 重排三维炮集 | *sort* 选择器（采集道序 / 接收线 / 偏移距 / 方位角） |
 | 重新划分覆盖网格 | Fold 页的 *bin x* / *bin y*（*default bin* 恢复默认） |
-| 选中一个 CMP bin | 在覆盖次数图上点它 |
+| 选中一个 CMP bin | 在 Geometry 页排列图下方的覆盖次数图上点它 |
+| 拾取速度 | 速度谱上用点工具 → 点击添加，拖动移动，点选 + **BACKSPACE** 删除 |
+| 判断速度拾取对不对 | 看动校正面板——上翘是偏低，下弯是偏高，平了才对 |
 | 逐条翻接收线 | *sort* 选为 receiver line，再拖线号滑条 |
 | 调谱面板大小 | Spectrum 块里的 *size*（S / M / L） |
 | 存图 | **⤓ full image** 按钮（原分辨率全图）· 工具栏 save 图标（当前视野，屏幕分辨率） |
@@ -261,6 +398,32 @@ GPU 上执行。
 （即经过滤波/增益链的）道集，换炮、换排序或改滤波后自动重算。窗至少需覆盖 4 道
 与 8 个采样点。两个谱面板共用 *size*（S / M / L），均带十字线与 `k` / `f` 读数。
 
+### 分辨率：到底有多少真的送到了浏览器
+
+面板上方两个控件决定画出多少道集，而且在做抽稀时都会明说。
+
+**resolution**（密度模式）。`auto` 把图像限制在每轴 1600 像素——在 192 × 1250
+的道集上这个上限根本不生效，一点没抽。`full` 则把每一道、每一个采样点都送过去。
+抽稀发生在**像素**层面：两种情况下面板都覆盖整个道集、坐标轴也不变，所以 `auto`
+让你损失的是细节，不是范围。
+
+**wiggle traces**。wiggle 显示画多少道。想密就调大，想干净就调小。和密度模式不同，
+这个是真的丢整道，所以只要没画全就会提示。
+
+默认值是预算而不是决定，因为代价是实打实的：
+
+| 道集 | auto | full |
+| --- | --- | --- |
+| 192 x 1250 | 0.2 MB, 0.7 ms | 0.2 MB, 0.5 ms（上限没触发） |
+| 960 x 3000 | 1.4 MB, 3.4 ms | 2.9 MB, 3.6 ms |
+| 2400 x 4000 | 1.6 MB, 4.6 ms | 9.6 MB, 24 ms |
+| 5000 x 12000 | 1.9 MB, 7.3 ms | 60 MB, 200 ms |
+
+这是**每次重绘**的代价，而每换一炮就重绘一次。几千道以内 `full` 基本免费，再往上
+就是一个值得自己拿主意的取舍——所以它是个控件，不是一个常数。
+
+`⤓ full image` 不受这两个控件影响，它始终按每道每采样一个像素重新渲染。
+
 ### 全分辨率导出
 
 面板上屏前按像素预算做 stride 抽稀，bokeh 工具栏的 save 存的是当前 canvas 截图，
@@ -339,11 +502,16 @@ Geometry 与 Fold 页随即可用。道数不等的炮补零对齐并打印警�
 （三维炮集排序、CMP 覆盖次数图：已完成）。
 **M2**（剩余）：联动对比面板 · 客户端体缓存（cigvis 级切片拖动手感）
 （AGC / 道均衡 / CuPy：已完成）。**M3**（剩余）：道头索引、按任意键抽道集
-（SEG-Y 导入：已完成）。**M4**（剩余）：共偏移距/时间切片、NMO 预览
-（同相轴拾取：已完成）。完整规划见 [`docs/plan.md`](https://github.com/zzzzswh/gathervis/blob/main/docs/plan.md)。
+（SEG-Y 导入：已完成）。**M4**（剩余）：共偏移距/时间切片
+（同相轴拾取、NMO 预览、速度谱、手工速度分析：已完成）。完整规划见 [`docs/plan.md`](https://github.com/zzzzswh/gathervis/blob/main/docs/plan.md)。
 *以及任何你提出的需求——见页首。*
 
 ## 致谢
+
+速度分析这套方法是 2025 年在成都 SEG 的一次课程里 **Gerard Schuster 教授**
+教给我的。非常感谢他。基于它做的自动 K-means 拾取在
+[kmeans-vel-picker](https://github.com/zzzzswh/kmeans-vel-picker) 里；这个
+仓库里是手工拾取，因为下判断是人的事。
 
 `petrel` 色标锚点取自 [cigvis](https://github.com/JintaoLee-Roger/cigvis)（MIT）。
 正演示例使用

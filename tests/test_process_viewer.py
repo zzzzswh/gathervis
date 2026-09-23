@@ -108,8 +108,8 @@ def test_volume3d_decimation_budget():
 
 
 def test_workspace_tabs_and_info(line):
-    ws = Workspace(line)                # 3-D line with geometry -> 4 tabs
-    assert list(ws.tabs._names) == ["Shot gathers", "Geometry", "Fold",
+    ws = Workspace(line)                # 3-D line with geometry
+    assert list(ws.tabs._names) == ["Shot gathers", "Geometry",
                                     "Volume slices"]
     assert ws.map is not None
     from gathervis.viewer import _info_md, _survey_kind
@@ -117,7 +117,7 @@ def test_workspace_tabs_and_info(line):
     assert "2-D seismic line" in md and "sources" in md
     assert isinstance(ws.panel(), pn.viewable.Viewable)
     ws2 = Workspace(line, view="slices")
-    assert ws2.tabs.active == 3                # slices tab initially active
+    assert ws2.tabs._names[ws2.tabs.active] == "Volume slices"   # view= honoured
     vol = gv.from_array(np.zeros((4, 5, 30), "f4"),
                         axes=("recy", "recx", "time"))
     assert _survey_kind(vol) == "volume"
@@ -128,7 +128,7 @@ def test_workspace_tabs_and_info(line):
 
 def test_layout_tab_pick_jumps_to_shots(line):
     ws = Workspace(line, view="slices")
-    assert ws.tabs.active == 3
+    assert ws.tabs._names[ws.tabs.active] == "Volume slices"
     ws.map._on_tap("indices", [], [4])  # tap a source on the layout tab
     assert ws.browser.ishot == 4        # shot selected...
     assert ws.tabs.active == 0          # ...and view jumped to shot gathers
@@ -867,11 +867,12 @@ def test_sidebar_cards_hidden_on_non_gather_tabs(line):
     ws = Workspace(line)                   # shot gathers + Geometry tabs
     other = [i for i in range(len(ws.tabs)) if i not in ws._tool_tabs]
     assert other, "need a tab the cards do not apply to"
-    assert ws._tools_box.visible is True    # starts on the shot-gather tab
+    box = ws._tool_boxes[0]                # the shot-gather tools
+    assert box.visible is True             # starts on the shot-gather tab
     ws.tabs.active = other[0]
-    assert ws._tools_box.visible is False
+    assert box.visible is False
     ws.tabs.active = ws._shot_tab
-    assert ws._tools_box.visible is True
+    assert box.visible is True
 
 
 def test_tab_switch_preserves_card_state(line):
@@ -919,7 +920,8 @@ def test_size_controls_are_above_the_figure(line):
     col = b.panel()[1]
     row = col.objects[0]
     assert isinstance(row, pn.Row)
-    assert [b.pane.w_height, b.pane.w_fit, b.pane.w_fullscreen,
+    assert [b.pane.w_height, b.pane.w_res, b.pane.w_wig_n, b.pane.w_reset,
+            b.pane.w_fit, b.pane.w_fullscreen,
             b.pane.w_download] == list(row.objects)
 
 
@@ -1235,7 +1237,7 @@ def _tool_cards(ws):
 def test_cards_share_one_flat_style(line):
     from gathervis.viewer import _CARD_CSS
     cards = _tool_cards(Workspace(line))
-    assert len(cards) == 4                         # Window/Spectrum/picking/FB
+    assert len(cards) == 5              # Window/Spectrum/picking/FB/Mute
     for c in cards:
         assert c.stylesheets == [_CARD_CSS]        # same sheet, not per-card
         assert "box-shadow: none" in _CARD_CSS     # ... and it kills the shadow
@@ -1270,7 +1272,7 @@ def test_file_inputs_are_restyled(line):
     from gathervis.viewer import _FILE_CSS
     inputs = [w for card in _tool_cards(Workspace(line))
               for w in card.select(pn.widgets.FileInput)]
-    assert len(inputs) == 2                        # windows.json + picks.csv
+    assert len(inputs) == 3            # windows.json + picks.csv + mutes.json
     for w in inputs:
         assert w.stylesheets == [_FILE_CSS]
         assert "::file-selector-button" in _FILE_CSS
@@ -1623,3 +1625,138 @@ def test_keys_add_no_exotic_models(line):
         return {type(m).__name__ for m in root.references()}
 
     assert model_types(True) - model_types(False) <= {"TextInput"}
+
+
+def test_agc_interior_shortcut_matches_the_plain_form():
+    """AGC computes its interior as one strided subtraction instead of two
+    array gathers; the output must be bit-identical, including where the
+    window is longer than the record."""
+    from gathervis.process import agc
+    rng = np.random.default_rng(0)
+
+    def plain(a, dt, window):
+        a = np.asarray(a, np.float32)
+        nt = a.shape[-1]
+        n = max(3, int(round(window / dt)))
+        h = n // 2
+        c = np.cumsum(a * a, axis=-1, dtype=np.float64)
+        c = np.concatenate([np.zeros_like(c[..., :1]), c], axis=-1)
+        idx = np.arange(nt)
+        i0, i1 = np.clip(idx - h, 0, nt), np.clip(idx + h + 1, 0, nt)
+        rms = np.sqrt((c[..., i1] - c[..., i0]) / (i1 - i0)).astype(np.float32)
+        return a / (rms + 1e-4 * float(rms.max()) + 1e-30)
+
+    for shape, window in (((40, 800), 0.5), ((40, 800), 0.02),
+                          ((40, 50), 2.0), ((4, 5, 300), 0.3),
+                          ((1, 7), 1.0), ((8, 3), 0.5)):
+        a = rng.standard_normal(shape).astype("f4")
+        assert np.array_equal(agc(a, 0.002, window), plain(a, 0.002, window)), \
+            f"{shape} / {window}"
+
+
+# ---------------- the view cannot be dragged off the data ----------------
+def test_the_panel_opens_on_the_whole_gather(line):
+    b = ShotBrowser(line, _state(line))
+    ntr = line.data.shape[1]
+    f = b.pane.figure
+    assert (f.x_range.start, f.x_range.end) == (0.0, float(ntr))
+    assert f.y_range.start > f.y_range.end                  # time downward
+    assert f.y_range.start == pytest.approx(line.nt * line.dt)
+    assert f.y_range.end == pytest.approx(line.t0)
+
+
+def test_panning_is_fenced_to_the_data(line):
+    """Nothing to look at outside it, and a blank panel gives no clue which
+    way to drag back."""
+    b = ShotBrowser(line, _state(line))
+    ntr = line.data.shape[1]
+    f = b.pane.figure
+    lo, hi = f.x_range.bounds
+    assert lo < 0 and hi > ntr                      # room for wiggle lobes
+    assert hi - ntr == pytest.approx(2.0)           # ... two trace spacings
+    assert f.y_range.bounds == (pytest.approx(line.t0),
+                                pytest.approx(line.nt * line.dt))
+
+
+def test_zoom_survives_stepping_to_the_next_shot(line):
+    """The point of zooming in on something is walking the shots past it."""
+    b = ShotBrowser(line, _state(line))
+    f = b.pane.figure
+    f.x_range.start, f.x_range.end = 5.0, 9.0
+    b.set_shot(3)
+    assert (f.x_range.start, f.x_range.end) == (5.0, 9.0)
+
+
+def test_a_gather_of_a_different_shape_refits(line):
+    b = ShotBrowser(line, _state(line))
+    f = b.pane.figure
+    f.x_range.start, f.x_range.end = 5.0, 9.0
+    b.pane.update(np.zeros((7, 40), "f4"), (-1.0, 1.0), y0=0.0, dy=0.004)
+    assert (f.x_range.start, f.x_range.end) == (0.0, 7.0)
+    assert f.y_range.bounds == (pytest.approx(0.0), pytest.approx(0.16))
+
+
+def test_whole_button_shows_everything_again(line):
+    b = ShotBrowser(line, _state(line))
+    f = b.pane.figure
+    ntr = float(line.data.shape[1])
+    f.x_range.start, f.x_range.end = 5.0, 9.0
+    b.pane.reset_view()
+    assert (f.x_range.start, f.x_range.end) == (0.0, ntr)
+    assert (f.x_range.reset_start, f.x_range.reset_end) == (0.0, ntr)
+
+
+def test_wiggle_says_when_it_is_not_drawing_every_trace():
+    """A panel quietly showing half the gather is worse than one showing all
+    of it badly, because you cannot tell which you are looking at."""
+    ws = Workspace(synthetic_line(ns=3, nr=192, nt=200))
+    ws._w_disp.value = "wiggle"
+    note = ws.browser.pane.subsampled
+    assert "96 of 192" in note.text and note.height > 0
+    ws._w_disp.value = "density"
+    assert note.text == "" and note.height == 0        # 200 samples: all of it
+
+
+def test_wiggle_traces_can_be_made_denser_or_sparser():
+    ws = Workspace(synthetic_line(ns=3, nr=192, nt=200))
+    pane = ws.browser.pane
+    ws._w_disp.value = "wiggle"
+    pane.w_wig_n.value = 192
+    assert len(pane._cds_wig.data["xs"]) == 192
+    assert pane.subsampled.text == ""               # nothing left to warn about
+    pane.w_wig_n.value = 24
+    assert len(pane._cds_wig.data["xs"]) == 24
+    assert "24 of 192" in pane.subsampled.text
+
+
+def test_full_resolution_ships_every_trace_and_sample():
+    """Bigger than the 1600 px budget on both axes, so auto really bites."""
+    big = synthetic_line(ns=2, nr=2400, nt=4000)
+    ws = Workspace(big)
+    pane = ws.browser.pane
+    auto = np.asarray(pane.cds.data["image"][0])
+    assert auto.shape != (4000, 2400)
+    assert "of 2400 x 4000" in pane.subsampled.text
+    assert "MB per redraw" in pane.subsampled.text   # says what it would cost
+
+    pane.w_res.value = "full"
+    full = np.asarray(pane.cds.data["image"][0])
+    assert full.shape == (4000, 2400)                # (ny, nx), transposed
+    assert pane.subsampled.text == ""
+
+
+def test_the_panel_still_spans_the_whole_gather_either_way():
+    """Decimation is in pixels, so the extent never changes with it."""
+    ws = Workspace(synthetic_line(ns=2, nr=2400, nt=4000))
+    pane = ws.browser.pane
+    before = (pane.figure.x_range.start, pane.figure.x_range.end,
+              pane.cds.data["dw"][0], pane.cds.data["dh"][0])
+    pane.w_res.value = "full"
+    assert (pane.figure.x_range.start, pane.figure.x_range.end,
+            pane.cds.data["dw"][0], pane.cds.data["dh"][0]) == before
+
+
+def test_no_note_when_wiggle_fits(line):
+    ws = Workspace(line)
+    ws._w_disp.value = "wiggle"
+    assert ws.browser.pane.subsampled.text == ""

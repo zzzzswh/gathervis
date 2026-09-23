@@ -50,8 +50,9 @@ updates the panel as you type.
   coordinates alone.
 * **QC tools built in.** Wiggle & variable-density display with industry
   colormaps, zero-phase Ormsby filters, AGC / trace balance, draw-a-window
-  spectral analysis (amplitude spectra and f-k), and manual / STA-LTA
-  first-break picking.
+  spectral analysis (amplitude spectra and f-k), manual / STA-LTA
+  first-break picking, top / bottom mutes that carry across gathers, and
+  hand-picked CMP velocity analysis.
 * **cigvis-style 3-D.** Volumes render as a rotatable cuboid with three live
   slice planes (WebGL).
 * **Simple.** All it needs is a browser: one port, auto-forwarded by VS Code
@@ -61,10 +62,25 @@ updates the panel as you type.
 ## Install
 
 ```bash
-pip install -e .            # numpy + panel + bokeh + plotly
-pip install deepwave        # optional, for the modelling examples (pulls torch)
-pip install segyio          # optional, for SEG-Y import
+pip install -e .                  # numpy + panel + bokeh + plotly
+pip install -e ".[segy]"          # optional, for SEG-Y import
+pip install -e ".[examples]"      # optional, torch + deepwave for the
+                                  # modelling examples -- ~2.5 GB
 ```
+
+With uv, the extras are the same names:
+
+```bash
+uv sync                           # the viewer
+uv sync --extra examples          # + torch/deepwave for examples/deepwave_*.py
+uv run --extra examples examples/deepwave_line2d.py    # or just for one run
+```
+
+`pyproject.toml` pins torch to the cu121 wheel index for local development.
+Without a GPU, or to keep the download small, point uv at the CPU index:
+`--index https://download.pytorch.org/whl/cpu`. Only the two `deepwave_*`
+examples need any of this; everything else runs on the four base
+dependencies.
 
 ## Quick start
 
@@ -94,7 +110,8 @@ gathervis vel.npy --axes x y depth --dt 10 --cmap rainbow
 ```
 
 Examples with synthetic data: `python examples/quickstart.py` serves an
-analytic synthetic;
+analytic synthetic; `python examples/velocity_picking.py` opens velocity
+analysis on a CMP gather whose answer is known;
 `python examples/deepwave_line2d.py` models a 2-D line with
 [deepwave](https://github.com/ar4/deepwave); and
 `python examples/deepwave_lines3d.py` shoots **five 2-D lines over a rich 3-D
@@ -152,6 +169,11 @@ Example: `python examples/quickstart.py patch`.
 
 ### CMP fold map
 
+Under the acquisition layout, on the **Geometry** tab — the same survey asked
+two ways, and a hole in the fold is a gap in the layout directly above it.
+The summary line gives the grid, the live bin count and the fold range.
+
+
 The **Fold** tab bins the midpoint of every source-receiver pair on a
 rectangular grid and counts them.
 
@@ -177,12 +199,14 @@ grid.counts                                  # (ny, nx) traces per bin
 grid.nlive, grid.extent, grid.bin_of(x, y)
 ```
 
-Tapping a bin selects and outlines it. The offset-azimuth distribution of a
-bin is available from the same module; the in-app rose diagram is not yet
-implemented:
+Tapping a bin selects and outlines it. The trace index behind it — which
+shot and which channel images the bin — is `traces_in_bin`; the offset-azimuth distribution comes
+from the same module, though the in-app rose diagram is not yet implemented:
 
 ```python
-from gathervis.survey import offsets_azimuths_in_bin, azimuth_sectors
+from gathervis.survey import (traces_in_bin, offsets_azimuths_in_bin,
+                              azimuth_sectors)
+shots, recs, offs = traces_in_bin(ds.geometry, grid, ix, iy)   # offset-sorted
 offs, azis, shots = offsets_azimuths_in_bin(ds.geometry, grid, ix, iy)
 edges, counts = azimuth_sectors(azis, nsector=24)   # survey convention, N = 0
 ```
@@ -190,14 +214,144 @@ edges, counts = azimuth_sectors(azis, nsector=24)   # survey convention, N = 0
 The number of non-empty sectors returned by `azimuth_sectors` is the bin's
 azimuth coverage.
 
+### Top and bottom mutes
+
+Two point tools on the gather panel, one per line: tap to add a node, drag
+to move it, BACKSPACE deletes the selected one. The cut is drawn across
+every trace, so what you see is what will be applied rather than the handles
+you placed. Turn **apply mute** on to see the gather with it — you cannot
+tell whether a cut is in the right place without seeing what it removes.
+
+**The lines are stored against offset, not against the column you dropped
+the node on.** A mute is an offset-dependent thing, so a line stored that
+way means the same cut on the next shot even though that shot has different
+traces in a different order, and it survives re-sorting the panel. Without
+geometry there are no offsets and the line falls back to trace index, which
+is honest but does not travel between gathers.
+
+**One line serves everything, with exceptions.** The scope switch decides
+where an edit goes — *all gathers* writes the default that every gather
+inherits, *this gather* gives the current one a line of its own. *Make this
+the default* pushes a line you tuned on one gather out to the rest;
+*revert to default* drops an exception. The status line above the panel
+always says which of the two you are looking at. Nothing is interpolated
+between gathers: a gather either has its own line or uses the default.
+
+Export writes JSON, and the same file mutes a gather from a script with no
+viewer involved:
+
+```python
+from gathervis.mute import Mutes, mute_shot
+
+mutes = Mutes.from_json(open("mutes.json").read())
+clean = mute_shot(ds, 7, mutes)        # shot 7's own line if it has one
+```
+
+The pieces underneath work on any gather and its offsets:
+
+```python
+from gathervis import mute
+
+top = mute.linear_line(v=1500., x_max=3000., pad=0.05)   # a straight cut
+out = mute.apply(gather, offsets, dt, top=top, taper=0.04)
+mute.evaluate(top, offsets)                              # the cut time per trace
+```
+
+The taper is not decoration. A hard cut leaves a step running along the mute
+trajectory, and a step is broadband energy on a coherent path — it comes
+back in spectra and stacks as an event that was never in the ground.
+
+### Velocity analysis
+
+```python
+from gathervis import cmp, survey
+import gathervis as gv
+
+grid = survey.fold(ds.geometry)
+cg = cmp.gather_in_bin(ds, grid, ix, iy)
+gv.velocity_analysis(cg, dt=ds.dt, port=8080)
+```
+
+Three panels reading left to right, which is the order the work happens in:
+the CMP gather, its semblance spectrum, and the gather with the current
+pick's moveout removed — plus the trace it all stacks to.
+
+Picking is by hand. Tap the spectrum to add a `(v, t)` point, drag to move
+it, BACKSPACE to delete. **Watch the moveout panel while you drag**: too slow
+and the event arches up at the far offsets, too fast and it smiles down,
+right and it is flat. That is the only test of a pick, and the reason the two
+panels sit side by side. There is no automatic picker, deliberately — a
+viewer should show you the answer, not decide it.
+
+*Export velocity file* writes `time_s,velocity` with the gather's location in
+the header, and reads back in.
+
+The input is a gather that was handed in, not one the panel went and found:
+a `CmpGather` (which carries its own offsets and bin location), a SEG-Y
+sort, or any `(ntrace, nt)` array given `offsets=` and `dt=`.
+
+`python examples/velocity_picking.py` opens it on a synthetic whose answer is
+known and prints that answer, so you can check your own picks against it.
+
+The pieces are usable on their own:
+
+```python
+from gathervis import velocity as vel
+
+clean = vel.front_mute(cg.data, cg.offsets, ds.dt, v=1500., pad=0.05)
+spec, v_grid = vel.velocity_spectrum(clean, cg.offsets, ds.dt, nv=100)
+flat = vel.nmo(clean, cg.offsets, v_t, ds.dt)
+trace = vel.nmo_stack(clean, cg.offsets, v_t, ds.dt)
+v_int = vel.dix(v_t, ds.times, smooth=51)       # interval velocity
+```
+
+Spectra come back `(nv, nt)` — velocity where trace number usually sits, time
+last like every other panel here.
+
+### Composing your own viewer
+
+`gv.show(data)` picks the views the data supports and lays them out. When
+that is not what you want — fewer tabs, a different order, one panel on its
+own — build the session yourself:
+
+```python
+import gathervis as gv
+
+s = gv.session(data)
+s.add(gv.gather())        # the shot browser
+s.add(gv.geometry())      # the acquisition map
+s.show(port=8080)
+```
+
+or in one call, where the order is the tab order:
+
+```python
+gv.session(data, views=[gv.fold(), gv.gather()]).show(port=8080)
+```
+
+The views are `gather`, `geometry`, `fold`, `shot_volume` and `slices`, and
+`gv.show()` is exactly this with the list filled in for you. Asking for one
+the data cannot support — a geometry map for a file with no coordinates —
+is an error rather than a silently missing tab.
+
+Both layers share everything else: the display controls, the sidebar, the
+URL sync, the keyboard. Selection is shared too, through the session's
+cursor rather than between the views — tapping a source on the map and
+dragging the shot slider are two ways of saying the same thing, and every
+view hears both without knowing the others exist.
+
 ### Gestures & controls
 
 | To do this | Do this |
 | --- | --- |
+| Get the whole panel back | *⤾ whole*. The view is fenced to the data, so it cannot be dragged out of sight in the first place |
 | Draw a box window | select the box toolbar tool → **SHIFT+drag** (or click, move, click) |
 | Draw a polygon window | select the polygon tool → click each vertex, **double-click or ESC** to finish |
 | Move / delete a window | drag it; tap to select, then **BACKSPACE** (or *clear windows*) |
 | Add / move / delete picks | point toolbar tool → tap adds, drag moves, tap + **BACKSPACE** deletes (or *clear shot* / *clear all*) |
+| Draw a mute | point tool per line (top / bottom) → tap adds a node, drag moves it, tap + **BACKSPACE** deletes |
+| Mute one gather differently | switch scope to *this gather*, then edit; *revert to default* undoes it |
+| Push a mute to every gather | *make this the default* |
 | Auto first breaks | set STA / LTA / threshold → *auto pick*; refine with *snap* (peak / trough / \|max\|) or by dragging |
 | Compare spectrum peaks | crosshair toolbar icon + the freq / dB readout under the panel |
 | Compute an f-k spectrum | *f-k spectrum* in the Spectrum block, applied to the first window |
@@ -206,7 +360,9 @@ azimuth coverage.
 | Scale one axis | the x-only / y-only wheel-zoom toolbar tools |
 | Re-sort a 3-D shot | the *sort* selector (as recorded / receiver line / offset / azimuth) |
 | Re-bin the fold map | *bin x* / *bin y* on the Fold tab (*default bin* restores) |
-| Select a CMP bin | tap it on the fold map |
+| Select a CMP bin | tap it on the fold map, under the layout on the Geometry tab |
+| Pick a velocity | point tool on the spectrum → tap adds, drag moves, tap + **BACKSPACE** deletes |
+| Check a velocity pick | watch the moveout panel — arching up is too slow, smiling down is too fast |
 | Step through receiver lines | *sort* = receiver line, then the line slider |
 | Reshape the 3-D cuboid | one *stretch* slider per axis (1.0 centered, 0.125×–8×) |
 | Jump to a shot | drag the slider, type in *go to shot*, or tap a source on the Geometry tab |
@@ -316,6 +472,37 @@ window must cover at least 4 traces and 8 samples. Both spectrum panels share
 the *size* selector (S / M / L) and both carry a crosshair and a `k` / `f`
 readout.
 
+### Resolution: what actually reaches the browser
+
+Two controls above the panel decide how much of the gather is drawn, and
+both say so when they are thinning it.
+
+**resolution** (density mode). `auto` caps the image at 1600 pixels per axis
+— on a 192 x 1250 gather that is no cap at all, and nothing is decimated.
+`full` ships every trace and every sample. The decimation is in *pixels*:
+either way the panel spans the whole gather and the axes do not change, so
+what `auto` costs you is detail, not extent.
+
+**wiggle traces**. How many traces the wiggle display draws. Raise it for a
+denser panel, lower it for a cleaner one. Unlike density, this one drops
+whole traces, so the note appears whenever it is not drawing all of them.
+
+The defaults are budgets, not decisions, because the cost is real:
+
+| gather | auto | full |
+| --- | --- | --- |
+| 192 x 1250 | 0.2 MB, 0.7 ms | 0.2 MB, 0.5 ms (no cap reached) |
+| 960 x 3000 | 1.4 MB, 3.4 ms | 2.9 MB, 3.6 ms |
+| 2400 x 4000 | 1.6 MB, 4.6 ms | 9.6 MB, 24 ms |
+| 5000 x 12000 | 1.9 MB, 7.3 ms | 60 MB, 200 ms |
+
+That is per redraw, and a redraw happens on every shot step. Up to a few
+thousand traces `full` is free; past that it is a choice worth making
+deliberately, which is why it is a control rather than a constant.
+
+`⤓ full image` is unaffected by either — it always re-renders at one pixel
+per trace and per sample.
+
 ### Full-resolution export
 
 Panels are stride-decimated to a pixel budget before going on the wire, and
@@ -416,11 +603,18 @@ cigvis-grade slice scrubbing (AGC / trace balance / CuPy: done). **3-D
 acquisition QC** (remaining): shot-record time slices over the receiver grid ·
 offset-azimuth rose diagrams per bin (3-D shot sorting, CMP fold map: done). **M3** (remaining): header indexing, gather extraction by any key
 (SEG-Y import: done). **M4** (remaining):
-common-offset/time slicing, NMO preview (event picking: done). Full plan:
+common-offset/time slicing (event picking, NMO preview, velocity spectra and
+hand-picked velocity analysis: done). Full plan:
 [`docs/plan.md`](https://github.com/zzzzswh/gathervis/blob/main/docs/plan.md). *And whatever you ask for — see the note at
 the top.*
 
 ## Acknowledgements
+
+The velocity-analysis method was taught to me by **Prof. Gerard Schuster**
+at an SEG course in Chengdu in 2025. I am very grateful to him. The automatic
+K-means picker built on it lives in
+[kmeans-vel-picker](https://github.com/zzzzswh/kmeans-vel-picker); what is
+here is hand picking, because deciding is the person's job.
 
 The `petrel` colormap anchors come from
 [cigvis](https://github.com/JintaoLee-Roger/cigvis) (MIT). Modelling examples use

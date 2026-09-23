@@ -171,7 +171,18 @@ def test_tapping_a_bin_selects_it(patch):
     assert picked == [(2, 1)]                      # ... is ignored
 
 
-def test_fold_tab_only_exists_with_geometry(patch):
-    assert "Fold" in list(Workspace(patch).tabs._names)
+def test_the_fold_map_lives_under_the_layout_map(patch):
+    """One tab, because a hole in the fold is a gap in the layout above it."""
+    ws = Workspace(patch)
+    assert "Fold" not in list(ws.tabs._names)          # not a tab of its own
+    assert "Geometry" in list(ws.tabs._names)
+    assert ws.fold is not None and ws.map is not None
+    view = ws.session.view("geometry")
+    assert view.fold is ws.fold and view.map is ws.map
+
+
+def test_no_geometry_tab_at_all_without_geometry():
     bare = gv.from_array(np.zeros((3, 8, 20), "f4"), dt=0.004)
-    assert "Fold" not in list(Workspace(bare).tabs._names)
+    ws = Workspace(bare)
+    assert "Geometry" not in list(ws.tabs._names)
+    assert ws.fold is None

@@ -12,13 +12,16 @@ Quickstart::
 from .core import Gathers, Geometry, from_array, from_file, from_segy
 
 __version__ = "0.16.0"
-__all__ = ["Gathers", "Geometry", "from_array", "from_file", "from_segy", "show"]
+_LAZY = ("show", "session", "gather", "geometry", "shot_volume",
+         "slices", "velocity_analysis")
+__all__ = ["Gathers", "Geometry", "from_array", "from_file", "from_segy",
+           *_LAZY]
 
 
 def __getattr__(name):
     # Defer the heavy panel/bokeh import to the first gv.show() call, so that
     # `import gathervis` stays instant for core/IO-only usage.
-    if name == "show":
-        from .viewer import show
-        return show
+    if name in _LAZY:
+        from . import viewer
+        return getattr(viewer, name)
     raise AttributeError(f"module 'gathervis' has no attribute {name!r}")

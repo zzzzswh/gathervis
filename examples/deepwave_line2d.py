@@ -17,12 +17,38 @@ import gathervis as gv
 DATA, GEOM = Path("line2d_data.npy"), Path("line2d_geom.npz")
 
 
+
+_MISSING_TORCH = """
+This example forward-models the data, which needs torch and deepwave. The
+viewer itself does not -- they are declared as the `examples` extra, so they
+are not installed by default (torch is ~2.5 GB against a 37 KB viewer).
+
+    uv sync --extra examples          # add them to the project environment
+    uv run --extra examples {script}  # or just for this one run
+
+pyproject pins torch to the cu121 index. Without a GPU, or to keep it small:
+
+    uv run --extra examples --index https://download.pytorch.org/whl/cpu {script}
+
+With pip:  pip install "gathervis[examples]"
+"""
+
+
+def _import_deepwave(script):
+    """torch + deepwave, or a message that says what to do about it."""
+    try:
+        import torch
+        import deepwave
+        from deepwave import scalar
+    except ImportError as exc:
+        raise SystemExit(f"{exc}\n{_MISSING_TORCH.format(script=script)}") from None
+    return torch, deepwave, scalar
+
+
 def model():
     """Forward-model the line with deepwave (imports torch: slow first time)."""
     _t0 = time.perf_counter()
-    import torch
-    import deepwave
-    from deepwave import scalar
+    torch, deepwave, scalar = _import_deepwave("examples/deepwave_line2d.py")
     print(f"[timer] import torch/deepwave: {time.perf_counter() - _t0:.1f}s")
 
     def _pick_device():

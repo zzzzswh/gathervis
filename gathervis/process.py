@@ -100,18 +100,41 @@ def agc(a, dt: float, window: float = 0.5) -> np.ndarray:
     use the true (shrinking) window. Zero-padded regions stay zero.
 
     Runs on the GPU transparently when ``a`` is a CuPy array.
+
+    This is the hot kernel of the whole viewer -- on a 480x3000 shot it is
+    about half the cost of a frame -- so it is written for memory traffic
+    rather than for brevity. Every interior sample's window is the same
+    width, so its two cumulative-sum endpoints are contiguous and the whole
+    interior is one strided subtraction. Indexing them with arrays instead,
+    which reads the same but is the obvious way to write it, gathers two
+    full float64 copies of the gather and costs twice as much for identical
+    output.
     """
     xp = _xp(a)
     a = xp.asarray(a, dtype=xp.float32)
     nt = a.shape[-1]
     n = max(3, int(round(window / float(dt))))
     h = n // 2
+    w = 2 * h + 1
     c = xp.cumsum(a * a, axis=-1, dtype=xp.float64)
     c = xp.concatenate([xp.zeros_like(c[..., :1]), c], axis=-1)   # len nt+1
+
     idx = xp.arange(nt)
     i0 = xp.clip(idx - h, 0, nt)
     i1 = xp.clip(idx + h + 1, 0, nt)
-    rms = xp.sqrt((c[..., i1] - c[..., i0]) / (i1 - i0)).astype(xp.float32)
+    total = xp.empty(a.shape, dtype=xp.float64)
+    count = (i1 - i0).astype(xp.float64)
+    lo, hi = h, nt - h - 1                     # samples with a full window
+    if lo <= hi and w <= nt:
+        total[..., lo:hi + 1] = c[..., w:] - c[..., :nt - w + 1]
+        edges = (slice(0, lo), slice(hi + 1, nt))
+    else:
+        edges = (slice(0, nt),)                # window longer than the record
+    for sl in edges:
+        if sl.start != sl.stop:
+            total[..., sl] = c[..., i1[sl]] - c[..., i0[sl]]
+
+    rms = xp.sqrt(total / count).astype(xp.float32)
     eps = 1e-4 * float(rms.max()) + 1e-30       # keeps dead zones quiet
     return a / (rms + eps)
 

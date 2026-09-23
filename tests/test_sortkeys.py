@@ -179,7 +179,7 @@ def test_download_name_tracks_the_sort(patch):
 
 def test_4d_workspace_tabs_and_chain(patch):
     ws = Workspace(patch)
-    assert list(ws.tabs._names) == ["Shot gathers", "Geometry", "Fold",
+    assert list(ws.tabs._names) == ["Shot gathers", "Geometry",
                                     "Shot volume"]
     # the cuboid tab follows the same filter/gain chain as the 2-D panel
     raw = np.asarray(ws.shot_volume.vol).copy()

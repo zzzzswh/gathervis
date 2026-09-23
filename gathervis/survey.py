@@ -21,7 +21,8 @@ from typing import NamedTuple
 import numpy as np
 
 __all__ = ["BinGrid", "midpoints", "default_bin", "bin_grid", "fold",
-           "offsets_azimuths_in_bin", "azimuth_sectors", "MAX_BINS"]
+           "traces_in_bin", "offsets_azimuths_in_bin", "azimuth_sectors",
+           "MAX_BINS"]
 
 MAX_BINS = 4_000_000        # refuse grids finer than this (a 2000x2000 map)
 _CHUNK = 2_000_000          # midpoints computed per chunk
@@ -150,16 +151,19 @@ def fold(geo, bin_size=None, max_bins: int = MAX_BINS) -> BinGrid:
     return BinGrid(counts.reshape(ny, nx).astype(np.int32), x0, y0, dx, dy)
 
 
-def offsets_azimuths_in_bin(geo, grid: BinGrid, ix: int, iy: int):
-    """(offsets, azimuths, shots) of every trace whose midpoint is in one bin.
+def _hits_in_bin(geo, grid: BinGrid, ix: int, iy: int):
+    """``(shots, recs, vectors)`` of every trace whose midpoint is in one bin.
 
-    This is what a rose / spider diagram for that bin is drawn from: how far
-    and in which direction the survey illuminates that subsurface point.
-    Azimuth is the survey convention -- degrees clockwise from +y.
+    ``recs`` is the receiver's index *within its shot*, which is what turns a
+    bin into an addressable set of traces -- offsets and azimuths alone
+    describe the illumination but cannot fetch it.
     """
+    ny, nx = grid.shape
+    if not (0 <= ix < nx and 0 <= iy < ny):
+        raise ValueError(f"bin ({ix}, {iy}) is outside the {nx} x {ny} grid")
     x_lo = grid.x0 + ix * grid.dx
     y_lo = grid.y0 + iy * grid.dy
-    offs, azis, shots = [], [], []
+    shots, recs, vecs = [], [], []
     for i in range(geo.ns):
         src, rec = _shot_pairs(geo, i)
         mid = 0.5 * (rec + src)
@@ -167,13 +171,42 @@ def offsets_azimuths_in_bin(geo, grid: BinGrid, ix: int, iy: int):
                              & (mid[:, 1] >= y_lo) & (mid[:, 1] < y_lo + grid.dy))
         if not hit.size:
             continue
-        d = rec[hit] - src
-        offs.append(np.hypot(d[:, 0], d[:, 1]))
-        azis.append(np.degrees(np.arctan2(d[:, 0], d[:, 1])) % 360.0)
         shots.append(np.full(hit.size, i, dtype=np.int64))
-    if not offs:
+        recs.append(hit.astype(np.int64))
+        vecs.append(rec[hit] - src)
+    if not shots:
+        return (np.empty(0, np.int64), np.empty(0, np.int64),
+                np.empty((0, 2), np.float64))
+    return np.concatenate(shots), np.concatenate(recs), np.concatenate(vecs)
+
+
+def traces_in_bin(geo, grid: BinGrid, ix: int, iy: int):
+    """``(shots, recs, offsets)`` addressing every trace that images one bin.
+
+    This is the CMP gather's index: the pairs are sorted by offset, which is
+    the order a CMP gather is displayed and the order moveout expects, so
+    reading ``data[shot, rec]`` down the arrays gives the gather directly.
+    See ``gathervis.cmp`` for the version that does the reading.
+    """
+    shots, recs, d = _hits_in_bin(geo, grid, ix, iy)
+    offs = np.hypot(d[:, 0], d[:, 1])
+    order = np.argsort(offs, kind="stable")
+    return shots[order], recs[order], offs[order]
+
+
+def offsets_azimuths_in_bin(geo, grid: BinGrid, ix: int, iy: int):
+    """(offsets, azimuths, shots) of every trace whose midpoint is in one bin.
+
+    This is what a rose / spider diagram for that bin is drawn from: how far
+    and in which direction the survey illuminates that subsurface point.
+    Azimuth is the survey convention -- degrees clockwise from +y.
+    """
+    shots, _, d = _hits_in_bin(geo, grid, ix, iy)
+    if not shots.size:
         return (np.empty(0), np.empty(0), np.empty(0, dtype=np.int64))
-    return (np.concatenate(offs), np.concatenate(azis), np.concatenate(shots))
+    return (np.hypot(d[:, 0], d[:, 1]),
+            np.degrees(np.arctan2(d[:, 0], d[:, 1])) % 360.0,
+            shots)
 
 
 def azimuth_sectors(azimuths, nsector: int = 24):
