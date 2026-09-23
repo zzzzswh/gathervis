@@ -128,7 +128,8 @@ def test_empty_bin_gives_empty_arrays():
 def test_fold_panel_reports_the_grid(patch):
     f = FoldMap(patch.geometry)
     assert f.grid.shape == SV.fold(patch.geometry).shape
-    assert "live" in f.summary.object and "fold" in f.summary.object
+    assert "live" in f.summary.object.lower()
+    assert "fold" in f.summary.object.lower()
     img = f.cds.data["image"][0]
     # empty bins go to NaN so they draw as background, not as fold 1
     assert np.isnan(img).sum() == img.size - f.grid.nlive
@@ -186,3 +187,66 @@ def test_no_geometry_tab_at_all_without_geometry():
     ws = Workspace(bare)
     assert "Geometry" not in list(ws.tabs._names)
     assert ws.fold is None
+
+
+def test_bins_are_centred_on_the_midpoints():
+    """Regular midpoints land mid-bin, not on the edges between bins."""
+    g = gv.from_array(np.zeros((1, 5, 10), "f4"), src=[[0.0, 0.0]],
+                      rec=[[0.0, 0.0], [20.0, 0.0], [40.0, 0.0], [60.0, 0.0],
+                           [80.0, 0.0]])            # midpoints every 10 m
+    grid = SV.fold(g.geometry, (10.0, 10.0))
+    assert grid.x0 == -5.0 and grid.y0 == -5.0
+    assert grid.counts.tolist() == [[1, 1, 1, 1, 1]]
+
+
+def test_geometry_is_one_map_with_layers(patch):
+    ws = Workspace(patch)
+    view = ws.session.view("geometry")
+    assert ws.map.figure is ws.fold.figure           # one figure, not two
+    view.w_layers.value = ["Sources"]
+    assert not ws.fold.r_img.visible and not ws.map.r_rec.visible
+    assert ws.map.r_src.visible
+    view.w_layers.value = ["Fold", "Receivers", "Sources"]
+    assert ws.fold.r_img.visible and ws.map.r_rec.visible
+
+
+def test_a_tap_on_a_source_is_not_a_bin_pick(patch):
+    ws = Workspace(patch)
+    x, y = patch.geometry.src[0, :2]
+    assert ws.map.near_source(float(x), float(y))
+    picked = []
+    ws.fold.on_pick = lambda ix, iy: picked.append((ix, iy))
+
+    class _Tap:
+        pass
+    _Tap.x, _Tap.y = float(x), float(y)
+    ws.fold._on_tap(_Tap)
+    assert picked == []
+
+
+def _two_d_lines(nlines=3, shots=8, nrec=30, nt=20):
+    """Parallel 2-D lines: each line's shots record only that line."""
+    src, rec = [], []
+    for l in range(nlines):
+        spread = np.stack([np.arange(nrec) * 10.0, np.full(nrec, 100.0 * l)], 1)
+        for k in range(shots):
+            src.append((15.0 + 35.0 * k, 100.0 * l))
+            rec.append(spread)
+    data = np.zeros((nlines * shots, nrec, nt), "f4")
+    return gv.from_array(data, src=np.array(src), rec=np.array(rec), dt=0.004)
+
+
+def test_unique_receivers_of_a_per_line_survey():
+    g = _two_d_lines()
+    assert not g.geometry.shared and g.geometry.rec.shape == (24, 30, 3)
+    u = g.geometry.unique_receivers()
+    assert u.shape == (90, 3)                        # 3 lines x 30, once each
+    assert SV.default_bin(g.geometry) == (5.0, 50.0)
+
+
+def test_the_map_draws_each_receiver_once():
+    ws = Workspace(_two_d_lines())
+    xs = ws.map.r_rec.data_source.data["x"]
+    assert len(xs) == 90                              # not 24 shots x 30
+    ws.browser.set_shot(20)                           # a shot on line 2
+    assert set(ws.map._cds_arec.data["y"]) == {200.0}

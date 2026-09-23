@@ -66,3 +66,7 @@ explicit = true
 
 [tool.setuptools.packages.find]
 include = ["gathervis*"]
+
+# the design's stylesheets ship inside the package (served per component)
+[tool.setuptools.package-data]
+gathervis = ["assets/*.css"]

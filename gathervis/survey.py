@@ -104,7 +104,7 @@ def default_bin(geo) -> tuple:
     axis borrows the other one, and a survey with no spacing at all gets a
     bin of 1 map unit.
     """
-    rec = geo.rec.reshape(-1, geo.rec.shape[-1])[:, :2]
+    rec = geo.unique_receivers()[:, :2]
     dx, dy = _spacing(rec[:, 0]) / 2.0, _spacing(rec[:, 1]) / 2.0
     if dx <= 0 and dy <= 0:
         return 1.0, 1.0
@@ -122,7 +122,13 @@ def bin_grid(geo, bin_size=None, max_bins: int = MAX_BINS) -> tuple:
     if dx <= 0 or dy <= 0:
         raise ValueError(f"bin size must be positive, got {(dx, dy)}")
     mid = midpoints(geo)
-    x0, y0 = float(mid[:, 0].min()), float(mid[:, 1].min())
+    # Centred on the first midpoint rather than starting at it: with the
+    # default bin (half the station spacing) a regular line's midpoints then
+    # sit in the middle of their bins, not on the edges between them -- where
+    # rounding picks the bin, and where a map drawn from the grid ends up
+    # half a bin off the line it came from.
+    x0 = float(mid[:, 0].min()) - dx / 2.0
+    y0 = float(mid[:, 1].min()) - dy / 2.0
     nx = int(np.floor((mid[:, 0].max() - x0) / dx)) + 1
     ny = int(np.floor((mid[:, 1].max() - y0) / dy)) + 1
     if nx * ny > max_bins:

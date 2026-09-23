@@ -1,0 +1,420 @@
+/* gathervis component styles.
+ *
+ * GathervisDesign applies this sheet inside the shadow root of every Panel
+ * component, which is the only place Panel lets CSS reach its widgets.
+ * Tokens mirror gathervis/theme.py. Specificity leads with :host so these
+ * rules beat bokeh's own widget sheets, which load first.
+ */
+:host {
+  --gv-ink: #17202a;
+  --gv-ink-2: #52606d;
+  --gv-ink-3: #7b8794;
+  --gv-line: #d5dbe1;
+  --gv-line-2: #e7ebef;
+  --gv-hover: #eef1f4;
+  --gv-canvas: #f6f8fa;
+  --gv-surface: #ffffff;
+  --gv-accent: #0b6b73;
+  --gv-accent-hover: #09585f;
+  --gv-accent-soft: #e2f0f1;
+  --gv-ring: rgba(11, 107, 115, 0.2);
+  --gv-warn: #9a5b00;
+  --gv-current: #f0642a;
+  --gv-radius: 6px;
+  --gv-label-w: 92px;
+  --gv-h: 28px;
+  --gv-font: "Segoe UI Variable Text", "Segoe UI", -apple-system,
+    BlinkMacSystemFont, "Helvetica Neue", "PingFang SC", "Hiragino Sans GB",
+    "Microsoft YaHei", "Noto Sans", "Noto Sans CJK SC", Arial, sans-serif;
+  --bokeh-base-font: var(--gv-font);
+  --panel-primary-color: var(--gv-accent);
+  --design-primary-color: var(--gv-accent);
+  font-family: var(--gv-font);
+  color: var(--gv-ink);
+}
+
+/* ---- labelled inputs: label column + control --------------------------- */
+:host .bk-input-group {
+  display: grid;
+  grid-template-columns: var(--gv-label-w) minmax(0, 1fr);
+  align-items: center;
+  column-gap: 8px;
+}
+:host .bk-input-group:has(> label[style*="display: none"]),
+:host .bk-input-group:has(> label:empty) {
+  grid-template-columns: minmax(0, 1fr);
+}
+:host .bk-input-group > label {
+  display: flex;
+  align-items: center;
+  gap: 4px;
+  min-width: 0;
+  margin: 0;
+  font-size: 12.5px;
+  font-weight: 400;
+  line-height: 1.3;
+  color: var(--gv-ink-2);
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+:host .bk-description > .bk-icon { opacity: 0.35; }
+
+:host .bk-input {
+  box-sizing: border-box;
+  height: var(--gv-h);
+  min-height: var(--gv-h);
+  padding: 0 8px;
+  font: inherit;
+  font-size: 13px;
+  font-variant-numeric: tabular-nums;
+  color: var(--gv-ink);
+  background-color: var(--gv-surface);
+  border: 1px solid var(--gv-line);
+  border-radius: var(--gv-radius);
+  box-shadow: none;
+  outline: none;
+  transition: border-color 0.12s, box-shadow 0.12s;
+}
+:host .bk-input:hover { border-color: #b8c1ca; }
+:host .bk-input:focus {
+  border-color: var(--gv-accent);
+  box-shadow: 0 0 0 3px var(--gv-ring);
+}
+:host select:not([multiple]).bk-input,
+:host select.bk-input {
+  appearance: none;
+  -webkit-appearance: none;
+  padding-right: 26px;
+  cursor: pointer;
+  background-image: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='10' height='6' viewBox='0 0 10 6'%3E%3Cpath d='M1 1l4 4 4-4' fill='none' stroke='%2352606d' stroke-width='1.5' stroke-linecap='round' stroke-linejoin='round'/%3E%3C/svg%3E");
+  background-repeat: no-repeat;
+  background-position: right 9px center;
+  background-size: 10px 6px;
+}
+:host textarea.bk-input { height: auto; padding: 6px 8px; }
+:host .bk-spin-wrapper { position: relative; }
+:host .bk-spin-wrapper > .bk-input { padding-right: 20px; }
+:host .bk-spin-btn { opacity: 0; transition: opacity 0.12s; }
+:host .bk-spin-wrapper:hover .bk-spin-btn,
+:host .bk-spin-wrapper:focus-within .bk-spin-btn { opacity: 0.65; }
+
+/* ---- checkbox: sits in the control column, like every other control ---- */
+:host(.bk-Checkbox) { padding-left: calc(var(--gv-label-w) + 8px); }
+:host input[type="checkbox"] {
+  width: 15px;
+  height: 15px;
+  margin: 0 8px 0 0;
+  accent-color: var(--gv-accent);
+  cursor: pointer;
+}
+:host(.bk-Checkbox) .bk-label { font-size: 13px; color: var(--gv-ink); }
+
+/* ---- sliders: track + value; the label lives in the row ---------------- */
+:host(.bk-Slider) .bk-input-group,
+:host(.bk-RangeSlider) .bk-input-group {
+  display: flex;
+  flex-direction: row-reverse;
+  align-items: center;
+  gap: 10px;
+  min-height: var(--gv-h);
+}
+:host .bk-slider-title {
+  flex: none;
+  min-width: 28px;
+  max-width: 50%;
+  text-align: right;
+  font-size: 12.5px;
+  color: var(--gv-ink);
+  font-variant-numeric: tabular-nums;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+:host .bk-slider-value { font-weight: 500; color: var(--gv-ink); }
+:host .noUi-target { flex: 1 1 auto; }
+:host .noUi-target.noUi-horizontal {
+  height: 4px;
+  margin: 0 7px;
+  border: 0;
+  border-radius: 2px;
+  background: var(--gv-line-2);
+  box-shadow: none;
+}
+:host .noUi-connects { border-radius: 2px; }
+:host .noUi-connect { background: var(--gv-accent) !important; }
+:host .noUi-horizontal .noUi-handle {
+  width: 14px;
+  height: 14px;
+  top: -5px;
+  right: -7px;
+  border: 2px solid var(--gv-accent);
+  border-radius: 50%;
+  background: var(--gv-surface);
+  box-shadow: 0 1px 2px rgba(23, 32, 42, 0.2);
+  cursor: grab;
+}
+:host .noUi-handle::before,
+:host .noUi-handle::after { display: none; }
+:host .noUi-handle:focus-visible,
+:host .noUi-active { outline: none; box-shadow: 0 0 0 4px var(--gv-ring); }
+:host .noUi-tooltip { display: none; }
+
+/* ---- buttons ------------------------------------------------------------ */
+:host .bk-btn {
+  box-sizing: border-box;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  gap: 6px;
+  height: var(--gv-h);
+  min-height: var(--gv-h);
+  padding: 0 12px;
+  font: inherit;
+  font-size: 12.5px;
+  font-weight: 500;
+  line-height: 1;
+  white-space: nowrap;
+  color: var(--gv-ink);
+  background: var(--gv-surface);
+  border: 1px solid var(--gv-line);
+  border-radius: var(--gv-radius);
+  box-shadow: none;
+  cursor: pointer;
+  transition: background-color 0.12s, border-color 0.12s, color 0.12s;
+}
+:host .bk-btn:hover { background: var(--gv-hover); border-color: #bfc8d0; }
+:host .bk-btn:active { background: #e6eaee; }
+:host .bk-btn:focus-visible { outline: 2px solid var(--gv-accent); outline-offset: 1px; }
+:host .bk-btn[disabled] { opacity: 0.45; cursor: default; }
+:host .bk-btn.bk-btn-primary {
+  color: #ffffff;
+  background: var(--gv-accent);
+  border-color: var(--gv-accent);
+}
+:host .bk-btn.bk-btn-primary:hover {
+  background: var(--gv-accent-hover);
+  border-color: var(--gv-accent-hover);
+}
+:host .bk-btn.bk-btn-light {
+  padding: 0 6px;
+  color: var(--gv-ink-2);
+  background: transparent;
+  border-color: transparent;
+}
+:host .bk-btn.bk-btn-light:hover { color: var(--gv-ink); background: var(--gv-hover); }
+:host .bk-btn a { color: inherit; text-decoration: none; }
+:host .bk-btn svg { width: 16px; height: 16px; flex: none; }
+:host .bk-btn-group:not(.bk-horizontal) { display: flex; width: 100%; }
+:host .bk-btn-group:not(.bk-horizontal) > .bk-btn { width: 100%; }
+:host .bk-input-group > .bk-btn { width: 100%; }
+
+/* segmented controls (radio / check button groups) */
+:host .bk-btn-group.bk-horizontal { display: flex; width: 100%; }
+:host .bk-btn-group.bk-horizontal > .bk-btn {
+  flex: 1 1 0;
+  min-width: 0;
+  margin: 0 0 0 -1px;
+  border-radius: 0;
+  color: var(--gv-ink-2);
+}
+:host .bk-btn-group.bk-horizontal > .bk-btn:first-child {
+  margin-left: 0;
+  border-radius: var(--gv-radius) 0 0 var(--gv-radius);
+}
+:host .bk-btn-group.bk-horizontal > .bk-btn:last-child {
+  border-radius: 0 var(--gv-radius) var(--gv-radius) 0;
+}
+:host .bk-btn-group.bk-horizontal > .bk-btn.bk-active {
+  position: relative;
+  z-index: 1;
+  color: var(--gv-accent);
+  background: var(--gv-accent-soft);
+  border-color: var(--gv-accent);
+  font-weight: 600;
+}
+
+/* ---- tabs: underline, no boxes ----------------------------------------- */
+:host .bk-header,
+:host(.bk-above) .bk-header {
+  background: transparent;
+  border-bottom: 1px solid var(--gv-line);
+}
+:host .bk-header .bk-tab,
+:host(.bk-above) .bk-header .bk-tab {
+  margin: 0 24px -1px 0;
+  padding: 11px 1px 9px;
+  font-size: 13px;
+  font-weight: 500;
+  color: var(--gv-ink-2);
+  background: transparent;
+  border: 0;
+  border-bottom: 2px solid transparent;
+  border-radius: 0;
+}
+:host .bk-header .bk-tab:hover { color: var(--gv-ink); }
+:host .bk-header .bk-tab.bk-active,
+:host(.bk-above) .bk-header .bk-tab.bk-active {
+  color: var(--gv-ink);
+  background: transparent;
+  border-color: transparent;
+  border-bottom: 2px solid var(--gv-accent);
+}
+
+/* ---- html helpers used by the viewer ----------------------------------- */
+.gv-sec {
+  display: flex;
+  align-items: baseline;
+  justify-content: space-between;
+  gap: 8px;
+  padding: 14px 0 6px;
+  border-top: 1px solid var(--gv-line);
+  font-size: 12.5px;
+  font-weight: 600;
+  color: var(--gv-ink);
+}
+.gv-sec.gv-first { padding-top: 0; border-top: 0; }
+.gv-sec small { font-size: 11.5px; font-weight: 400; color: var(--gv-ink-3); }
+.gv-sub {
+  padding: 8px 0 2px;
+  font-size: 12px;
+  font-weight: 600;
+  color: var(--gv-ink-2);
+}
+.gv-label {
+  font-size: 12.5px;
+  line-height: var(--gv-h);
+  color: var(--gv-ink-2);
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+.gv-label[title] { cursor: help; }
+.gv-value { font-size: 12.5px; line-height: var(--gv-h); color: var(--gv-ink);
+  font-variant-numeric: tabular-nums; white-space: nowrap; }
+.gv-muted { color: var(--gv-ink-3); }
+.gv-hint { font-size: 12px; line-height: 1.5; color: var(--gv-ink-2); }
+.gv-hint b { font-weight: 600; color: var(--gv-ink); }
+.gv-warn { font-size: 12px; line-height: 1.5; color: var(--gv-warn); }
+.gv-title { margin: 0 0 3px; font-size: 14px; font-weight: 600; line-height: 1.35;
+  color: var(--gv-ink); overflow-wrap: anywhere; }
+.gv-kind { margin: 0 0 10px; font-size: 12.5px; color: var(--gv-ink-2); }
+.gv-kv {
+  display: grid;
+  grid-template-columns: var(--gv-label-w) minmax(0, 1fr);
+  column-gap: 8px;
+  row-gap: 4px;
+  margin: 0;
+  font-size: 12.5px;
+  line-height: 1.4;
+}
+.gv-kv dt { margin: 0; color: var(--gv-ink-2); }
+.gv-kv dd { margin: 0; color: var(--gv-ink); font-variant-numeric: tabular-nums;
+  overflow-wrap: anywhere; }
+kbd, .gv-kbd {
+  display: inline-block;
+  box-sizing: border-box;
+  min-width: 18px;
+  height: 18px;
+  padding: 0 5px;
+  font: inherit;
+  font-size: 11px;
+  font-weight: 600;
+  line-height: 16px;
+  text-align: center;
+  vertical-align: 1px;
+  color: var(--gv-ink-2);
+  background: var(--gv-surface);
+  border: 1px solid var(--gv-line);
+  border-bottom-width: 2px;
+  border-radius: 4px;
+}
+.gv-help { font-size: 12px; line-height: 1.5; color: var(--gv-ink-2); }
+.gv-help p { margin: 0 0 8px; }
+.gv-help dl { display: grid; grid-template-columns: 84px 1fr; column-gap: 8px;
+  row-gap: 6px; margin: 0; }
+.gv-help dt { margin: 0; font-weight: 600; color: var(--gv-ink); }
+.gv-help dd { margin: 0; }
+.gv-crumb {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  min-width: 0;
+  font-size: 13px;
+  color: var(--gv-ink-2);
+  white-space: nowrap;
+}
+.gv-crumb::before { content: ""; flex: none; width: 1px; height: 18px;
+  background: var(--gv-line); }
+.gv-crumb span { overflow: hidden; text-overflow: ellipsis; }
+.gv-keys { font-size: 12px; line-height: 1.6; color: var(--gv-ink-2); }
+.gv-keys kbd { margin-right: 2px; }
+.gv-slice-key { display: flex; align-items: center; gap: 8px; line-height: var(--gv-h);
+  font-size: 12.5px; color: var(--gv-ink-2); white-space: nowrap; }
+.gv-slice-key.gv-on { color: var(--gv-ink); font-weight: 600; }
+.gv-slice-key.gv-on kbd { color: #fff; background: var(--gv-current);
+  border-color: var(--gv-current); }
+.gv-caption { font-size: 12.5px; font-weight: 600; color: var(--gv-ink); padding: 2px 0 4px; }
+
+/* an input whose label is carried by the row it sits in */
+:host(.gv-bare) .bk-input-group { grid-template-columns: minmax(0, 1fr); }
+:host(.gv-bare) .bk-input-group > label { display: none; }
+
+/* card titles live in their own HTML pane, one shadow root further in */
+:host(.card-title) h3 {
+  margin: 0;
+  font-size: 13px;
+  font-weight: 500;
+  color: var(--gv-ink);
+}
+
+/* Panel's own button sheet scopes by :host(.solid) / :host(.outline); match
+ * that specificity so one button style holds everywhere. */
+:host(.solid) .bk-btn.bk-btn-default,
+:host(.outline) .bk-btn.bk-btn-default {
+  color: var(--gv-ink);
+  background: var(--gv-surface);
+  border: 1px solid var(--gv-line);
+}
+:host(.solid) .bk-btn.bk-btn-default:hover,
+:host(.outline) .bk-btn.bk-btn-default:hover {
+  background: var(--gv-hover);
+  border-color: #bfc8d0;
+}
+:host(.solid) .bk-btn.bk-btn-primary,
+:host(.outline) .bk-btn.bk-btn-primary {
+  color: #ffffff;
+  background: var(--gv-accent);
+  border: 1px solid var(--gv-accent);
+}
+:host(.solid) .bk-btn.bk-btn-primary:hover,
+:host(.outline) .bk-btn.bk-btn-primary:hover {
+  background: var(--gv-accent-hover);
+  border-color: var(--gv-accent-hover);
+}
+:host(.solid) .bk-btn.bk-btn-light,
+:host(.outline) .bk-btn.bk-btn-light {
+  color: var(--gv-ink-2);
+  background: transparent;
+  border: 1px solid transparent;
+}
+:host(.solid) .bk-btn.bk-btn-light:hover,
+:host(.outline) .bk-btn.bk-btn-light:hover {
+  color: var(--gv-ink);
+  background: var(--gv-hover);
+}
+:host(.solid) .bk-btn-group.bk-horizontal > .bk-btn,
+:host(.outline) .bk-btn-group.bk-horizontal > .bk-btn { color: var(--gv-ink-2); }
+:host(.solid) .bk-btn-group.bk-horizontal > .bk-btn.bk-btn-default.bk-active,
+:host(.outline) .bk-btn-group.bk-horizontal > .bk-btn.bk-btn-default.bk-active,
+:host .bk-btn-group.bk-horizontal > .bk-btn.bk-btn-default.bk-active {
+  color: var(--gv-accent);
+  background: var(--gv-accent-soft);
+  border-color: var(--gv-accent);
+}
+
+/* tabs: no focus box -- keys get used while a tab still has focus, and
+ * the underline already says which tab is active */
+:host .bk-header .bk-tab:focus,
+:host .bk-header .bk-tab:active,
+:host .bk-header .bk-tab:focus-visible { outline: none; }

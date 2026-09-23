@@ -74,7 +74,8 @@ def test_volume3d_geometry_and_sliders():
     sv = VolumeView3D(d, names=("recy", "recx"), dt=0.002)
     assert isinstance(sv.fig, dict)     # plain dict: Panel must never install
     #                                     restyle hooks (plotly.js gl3d #2866)
-    assert len(sv.fig["data"]) == 4                    # 3 slice planes + box
+    assert len(sv.fig["data"]) == 5      # 3 slice planes + box + outline
+    assert sv.fig["data"][4]["name"] == "active"
     s0, s1, s2 = sv.fig["data"][:3]
     assert all(t["type"] == "surface" for t in (s0, s1, s2))
     assert sv.fig["data"][3]["type"] == "scatter3d"
@@ -299,7 +300,7 @@ def test_depth_volume_workspace():
     assert ws.state["symmetric"] is False
     assert ws.state["clim"][0] > 0
     sv = ws.slices
-    assert sv.fig["layout"]["scene"]["zaxis"]["title"] == "depth (m)"
+    assert sv.fig["layout"]["scene"]["zaxis"]["title"]["text"] == "depth (m)"
     assert sv.w2.name == "depth sample"
     with pytest.raises(ValueError):
         gv.from_array(vel, axes=("x", "y", "rec"))          # bad last axis
@@ -794,22 +795,17 @@ def _find(obj, cls, out=None):
 
 
 @pytest.mark.parametrize("tools", ["sidebar", "below"])
-def test_gesture_help_toggle(line, tools):
+def test_gesture_help_is_a_tool_section(line, tools):
     from gathervis.viewer import Workspace
     ws = Workspace(line, tools=tools)
-    # the help button follows the cards: sidebar by default, else under the plot
+    # the sheet follows the cards: sidebar by default, else under the plot
     body = pn.Column(*ws.sidebar()) if tools == "sidebar" else ws.browser.panel()
-
-    btns = [b for b in _find(body, pn.widgets.Button)
-            if b.name == "? gestures"]
-    assert len(btns) == 1
-    helps = [h for h in _find(body, pn.pane.HTML)
+    cards = [c for c in _find(body, pn.Card) if c.title == "Gestures and keys"]
+    assert len(cards) == 1
+    assert cards[0].collapsed is (tools == "sidebar")
+    helps = [h for h in _find(cards[0], pn.pane.HTML)
              if "Toolbar gestures" in str(h.object)]
-    assert len(helps) == 1 and helps[0].visible is False
-    btns[0].clicks += 1                    # toggle open
-    assert helps[0].visible is True
-    btns[0].clicks += 1                    # toggle closed
-    assert helps[0].visible is False
+    assert len(helps) == 1
     assert "SHIFT+drag" in str(helps[0].object)
     assert "BACKSPACE" in str(helps[0].object)
 
@@ -818,7 +814,7 @@ def test_gesture_help_toggle(line, tools):
 def test_spectrum_position_and_size(line):
     b = ShotBrowser(line, _state(line), tools="below")
     body = b.panel()
-    col = body[1]                          # figure column of the 2-D branch
+    col = body                             # the frame is the whole panel
     kinds = [type(o).__name__ for o in col.objects]
     # size controls, gather figure, readout, spectra column, cards, help
     assert kinds[:3] == ["Row", "Bokeh", "Bokeh"]
@@ -835,7 +831,8 @@ def test_spectrum_position_and_size(line):
 
 
 # ---------------- tool cards in the sidebar ----------------
-_CARD_TITLES = {"Window", "Spectrum", "Event picking", "FB picking"}
+_CARD_TITLES = {"Analysis windows", "Spectrum", "Event picking",
+                "First breaks"}
 
 
 def _card_titles(obj):
@@ -880,7 +877,7 @@ def test_tab_switch_preserves_card_state(line):
     still open when they come back from another tab."""
     ws = Workspace(line)
     card = [c for c in _find(pn.Column(*ws.sidebar()), pn.Card)
-            if c.title == "FB picking"][0]
+            if c.title == "First breaks"][0]
     card.collapsed = False
     other = [i for i in range(len(ws.tabs)) if i not in ws._tool_tabs][0]
     ws.tabs.active = other
@@ -894,9 +891,9 @@ def test_sidebar_cards_are_shared_not_duplicated(line):
     ws = Workspace(line)
     assert ws.sidebar()[-1] is ws.sidebar()[-1]
     a = [c for c in _find(pn.Column(*ws.sidebar()), pn.Card)
-         if c.title == "FB picking"][0]
+         if c.title == "First breaks"][0]
     bcard = [c for c in _find(pn.Column(*ws.sidebar()), pn.Card)
-             if c.title == "FB picking"][0]
+             if c.title == "First breaks"][0]
     assert a is bcard
 
 
@@ -917,17 +914,33 @@ def test_height_slider_drives_the_figure(line):
 
 def test_size_controls_are_above_the_figure(line):
     b = ShotBrowser(line, _state(line))
-    col = b.panel()[1]
-    row = col.objects[0]
-    assert isinstance(row, pn.Row)
-    assert [b.pane.w_height, b.pane.w_res, b.pane.w_wig_n, b.pane.w_reset,
-            b.pane.w_fit, b.pane.w_fullscreen,
-            b.pane.w_download] == list(row.objects)
+    col = b.panel()
+    bar = col.objects[0]                   # one toolbar row above the figure
+    assert isinstance(bar, pn.Row)
+    view = bar.objects[-1]                 # view controls at its right end
+    widgets = [o for o in view.objects if isinstance(o, pn.widgets.Widget)]
+    assert widgets == [b.pane.w_height, b.pane.w_reset, b.pane.w_fit,
+                       b.pane.w_fullscreen, b.pane.w_download]
+    nav = bar.select(pn.widgets.Widget)    # ... and the shot navigation
+    assert b.w_shot in nav and b.w_jump in nav
+
+
+def test_display_resolution_settings_live_in_the_sidebar(line):
+    ws = Workspace(line)
+    pane = ws.browser.pane
+    side = pn.Column(*ws.sidebar()).select(pn.widgets.Widget)
+    assert pane.w_res in side and pane.w_wig_n in side
+    assert pane.w_res.visible and not pane.w_wig_n.visible   # density
+    ws._w_disp.value = "wiggle"
+    assert not pane.w_res.visible and pane.w_wig_n.visible
+    assert not ws._w_cmap.visible          # wiggle has no colormap
+    ws._w_disp.value = "density"
+    assert ws._w_cmap.visible
 
 
 def test_frame_carries_the_fullscreen_classes(line):
     b = ShotBrowser(line, _state(line))
-    col = b.panel()[1]
+    col = b.panel()
     assert "gv-plot" in col.css_classes         # styled by _PLOT_CSS
     assert b.pane._cls in col.css_classes       # unique fullscreen target
 
@@ -963,7 +976,7 @@ def test_fit_clamps_to_the_slider_range(line):
 def test_polarity_flip(line):
     ws = Workspace(line)
     flip = ws._controls[1]
-    assert flip.name == "flip polarity"
+    assert flip.name == "Flip polarity"
     raw = np.array(ws.browser.pane.cds.data["image"][0], dtype=np.int16)
     flip.value = True
     assert ws.state["flip"] is True
@@ -1116,7 +1129,7 @@ def test_download_button_sits_with_fit_and_fullscreen(line):
     pane = ws.browser.pane
     row = list(pane.size_controls())
     assert row[-1] is pane.w_download                  # right of fullscreen
-    assert pane.w_download.description.startswith("download full image")
+    assert pane.w_download.description.startswith("Export PNG")
     assert not pane.w_download.disabled
     assert pane.w_download in pane.frame().select(pn.widgets.FileDownload)
 
@@ -1237,12 +1250,12 @@ def _tool_cards(ws):
 def test_cards_share_one_flat_style(line):
     from gathervis.viewer import _CARD_CSS
     cards = _tool_cards(Workspace(line))
-    assert len(cards) == 5              # Window/Spectrum/picking/FB/Mute
+    assert len(cards) == 6    # windows/spectrum/picking/FB/mute + gestures
     for c in cards:
         assert c.stylesheets == [_CARD_CSS]        # same sheet, not per-card
         assert "box-shadow: none" in _CARD_CSS     # ... and it kills the shadow
         assert c.sizing_mode == "stretch_width"
-        assert c.margin == (4, 0)
+        assert c.margin in (0, (0, 0))    # one list, no gaps
         assert c.collapsed
 
 
@@ -1264,8 +1277,8 @@ def test_card_buttons_use_one_colour_scheme(line):
         assert set(kinds) <= {"default", "primary"}
         accents[card.title] = kinds.count("primary")
         assert accents[card.title] <= 1
-    assert accents["Spectrum"] == 1 and accents["FB picking"] == 1
-    assert accents["Window"] == 0 and accents["Event picking"] == 0
+    assert accents["Spectrum"] == 1 and accents["First breaks"] == 1
+    assert accents["Analysis windows"] == 0 and accents["Event picking"] == 0
 
 
 def test_file_inputs_are_restyled(line):
@@ -1301,7 +1314,7 @@ def test_fit_falls_back_when_the_container_is_missing(line):
 
 def test_download_button_is_text_not_a_bare_icon(line):
     dl = Workspace(line).browser.pane.w_download
-    assert "full image" in dl.label                # reads, not just an arrow
+    assert "full image" in dl.label.lower()        # reads, not just an arrow
     assert dl.button_type == "light"               # matches fit / fullscreen
 
 
@@ -1398,8 +1411,8 @@ def test_spectrum_card_controls(line):
     card = [c for c in pn.Column(*ws.sidebar()).select(pn.Card)
             if c.title == "Spectrum"][0]
     names = [w.name for w in card.select(pn.widgets.Widget)]
-    assert names == ["compute spectrum", "traces", "y axis",
-                     "f-k spectrum", "size"]
+    assert names == ["Compute spectrum", "Traces", "Scale", "Panel size",
+                     "f-k of first window"]
 
 
 def test_y_axis_switches_between_amplitude_and_db(line):
@@ -1455,10 +1468,53 @@ def _claimed(ws):
     return ws._keys_js.args["keys"]
 
 
-def test_only_the_arrow_keys_are_claimed(line):
-    """Claiming a key means swallowing it, so claim only the one shortcut."""
+def test_only_navigation_keys_are_claimed(line):
+    """Claiming a key means swallowing it, so claim only keys that move
+    through the data: arrows, Home / End, and 1-3 for volume slices."""
     ws = Workspace(line, keys=True)
-    assert sorted(_claimed(ws)) == ["ArrowLeft", "ArrowRight"]
+    assert sorted(_claimed(ws)) == sorted(["ArrowLeft", "ArrowRight", "Home",
+                                           "End", "1", "2", "3"])
+
+
+def test_home_end_and_shift_on_shots(line):
+    ws = Workspace(line, keys=True)
+    _press(ws, "End")
+    assert ws.browser.ishot == line.nshot - 1
+    _press(ws, "Home")
+    assert ws.browser.ishot == 0
+    _press(ws, "S-ArrowRight")                           # Shift: ten shots
+    assert ws.browser.ishot == min(10, line.nshot - 1)
+
+
+def test_volume_keys_choose_and_move_slices(line):
+    ws = Workspace(line, keys=True)
+    ws.tabs.active = ws._view_tabs["slices"]
+    sv, shot = ws.slices, ws.browser.ishot
+    _press(ws, "3")                                      # the time slice
+    assert sv.active == 2 and "gv-on" in sv._tags[2].object
+    _press(ws, "ArrowRight")
+    assert sv.w2.value == 1
+    _press(ws, "S-ArrowRight")
+    assert sv.w2.value == 1 + sv.big_step()
+    _press(ws, "End")
+    assert sv.w2.value == sv.w2.end
+    _press(ws, "1")
+    _press(ws, "Home")
+    assert sv.w0.value == 0
+    assert ws.browser.ishot == shot                      # shots left alone
+    out = sv.fig["data"][4]                              # outline follows
+    assert set(out["x"]) == {0.0}
+
+
+def test_dragging_a_slider_makes_its_slice_active(line):
+    sv = Workspace(line).slices
+    sv.w1.value = 3
+    assert sv.active == 1 and set(sv.fig["data"][4]["y"]) == {3.0}
+
+
+def test_volume_key_hint_only_when_keys_are_bound(line):
+    assert Workspace(line, keys=True).slices.keys_hint.visible
+    assert not Workspace(line, keys=False).slices.keys_hint.visible
 
 
 def test_a_shotless_view_binds_nothing(line):
@@ -1501,7 +1557,7 @@ def test_the_display_state_is_left_to_the_widgets(line):
                     ws.state.get("gain"), ws.state.get("perc"),
                     ws.tabs.active)
     before = snap()
-    for k in ("w", "p", "g", "[", "]", "f", "1", "2", "?", "Home", "End",
+    for k in ("w", "p", "g", "[", "]", "f", "1", "2", "?",
               "shift+ArrowRight", "z", "Escape", "", "Backspace"):
         _press(ws, k)
     assert snap() == before
@@ -1519,7 +1575,8 @@ def test_key_listener_leaves_typing_alone(line):
     assert "e.ctrlKey || e.metaKey || e.altKey" in js    # browser shortcuts
     assert "e.repeat" in js                              # held keys throttled
     assert "keys.indexOf(e.key) < 0" in js               # unclaimed keys pass
-    assert "shiftKey" not in js and "clickFullscreen" not in js
+    assert "shiftKey" in js                # forwarded as a modifier only
+    assert "clickFullscreen" not in js
 
 
 def test_keys_can_be_switched_off(line):
@@ -1760,3 +1817,61 @@ def test_no_note_when_wiggle_fits(line):
     ws = Workspace(line)
     ws._w_disp.value = "wiggle"
     assert ws.browser.pane.subsampled.text == ""
+
+
+def test_each_served_session_gets_its_own_workspace(line):
+    """bokeh models belong to one document, so a second tab or a reload
+    must not be handed the first session's figures."""
+    from gathervis.viewer import _per_session
+    first = Workspace(line)
+    build = _per_session(first, lambda: Workspace(line))
+    a, b, c = build(), build(), build()
+    assert a is first and b is not first and c is not b
+    assert b.browser.pane.figure is not a.browser.pane.figure
+
+
+def test_composer_sessions_do_not_share_view_instances(line):
+    comp = gv.session(line, views=[gv.gather(), gv.geometry()])
+    w1, w2 = comp.build(), comp._fresh()
+    assert w1.browser is not w2.browser and w1.map is not w2.map
+    assert [v.name for v in w2.session.views] == ["gather", "geometry"]
+
+
+class _Counting:
+    """An index-only lazy array that counts the samples it hands out."""
+
+    def __init__(self, a):
+        self.a, self.shape, self.ndim, self.dtype = a, a.shape, a.ndim, a.dtype
+        self.read = 0
+
+    def __getitem__(self, key):
+        out = np.asarray(self.a[key])
+        self.read += out.size
+        return out
+
+
+def test_the_volume_tab_reads_nothing_until_it_is_opened():
+    g = synthetic_line(ns=6, nr=40, nt=200)
+    ws = Workspace(g)
+    sv = ws.slices
+    assert not sv.ready
+    assert all(t["visible"] is False for t in sv.fig["data"][:3])
+    ws._w_ftype.value = "band-pass"            # chain changes keep it pending
+    assert not sv.ready and sv.vol is not g.data
+    ws.tabs.active = ws._view_tabs["slices"]   # first look: read now
+    assert sv.ready
+    assert all(t.get("visible", True) for t in sv.fig["data"][:3])
+    assert sv.fig["data"][2]["surfacecolor"].shape == (6, 40)
+    opened = Workspace(g, view="slices").slices  # opened on it: ready at once
+    assert opened.ready
+
+
+def test_slices_read_only_their_decimated_samples():
+    from gathervis.viewer import MAX_PX_3D
+    a = np.random.default_rng(3).standard_normal((900, 800, 30)).astype("f4")
+    lazy = _Counting(a)
+    sv = VolumeView3D(lazy, clim=(-1.0, 1.0))
+    budget = (MAX_PX_3D[0] * 30 + MAX_PX_3D[0] * 30
+              + MAX_PX_3D[0] * MAX_PX_3D[1])     # three decimated planes
+    assert 0 < lazy.read <= budget               # never a full-res slice
+    assert sv.fig["data"][2]["surfacecolor"].shape == (300, 400)

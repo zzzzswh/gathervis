@@ -1,0 +1,57 @@
+/* gathervis page chrome (header, sidebar, work area) for GathervisTemplate.
+ * Plain document CSS: the template is not in a shadow root. Custom
+ * properties set here inherit into every component below. */
+:root {
+  --gv-ink: #17202a;
+  --gv-ink-2: #52606d;
+  --gv-line: #d5dbe1;
+  --gv-canvas: #f6f8fa;
+  --gv-font: "Segoe UI Variable Text", "Segoe UI", -apple-system,
+    BlinkMacSystemFont, "Helvetica Neue", "PingFang SC", "Hiragino Sans GB",
+    "Microsoft YaHei", "Noto Sans", "Noto Sans CJK SC", Arial, sans-serif;
+  --bokeh-base-font: var(--gv-font);
+  --panel-primary-color: #0b6b73;
+  --design-primary-color: #0b6b73;
+  --panel-background-color: #ffffff;
+  --panel-surface-color: #f6f8fa;
+}
+html, body {
+  font-family: var(--gv-font);
+  color: var(--gv-ink);
+  background: #ffffff;
+  -webkit-font-smoothing: antialiased;
+}
+#header {
+  box-sizing: border-box;
+  height: 48px;
+  min-height: 48px;
+  padding: 0 16px 0 8px;
+  color: var(--gv-ink) !important;
+  background: #ffffff !important;
+  border-bottom: 1px solid var(--gv-line);
+  box-shadow: none !important;
+}
+#sidebar-button {
+  display: flex;
+  flex-direction: column;
+  justify-content: center;
+  margin: 0 6px 0 0;
+  padding: 8px;
+  border-radius: 6px;
+}
+#sidebar-button:hover { background: #eef1f4; }
+.pn-bar { width: 16px; height: 1.5px; margin: 2px 0; background-color: var(--gv-ink-2); }
+a.title {
+  font-size: 15px;
+  font-weight: 650;
+  line-height: 48px;
+  letter-spacing: -0.005em;
+  color: var(--gv-ink) !important;
+}
+#header-items { align-items: center; min-width: 0; padding-left: 12px; overflow: hidden; }
+#sidebar {
+  padding: 16px 16px 28px;
+  background: var(--gv-canvas);
+  border-right: 1px solid var(--gv-line);
+}
+#main { padding: 4px 20px 20px; background: #ffffff; }

@@ -18,6 +18,7 @@ gathervis/render.py
 gathervis/sortkeys.py
 gathervis/state.py
 gathervis/survey.py
+gathervis/theme.py
 gathervis/velocity.py
 gathervis/viewer.py
 gathervis.egg-info/PKG-INFO
@@ -26,6 +27,8 @@ gathervis.egg-info/dependency_links.txt
 gathervis.egg-info/entry_points.txt
 gathervis.egg-info/requires.txt
 gathervis.egg-info/top_level.txt
+gathervis/assets/gathervis.css
+gathervis/assets/page.css
 tests/test_cmp.py
 tests/test_core.py
 tests/test_mute.py

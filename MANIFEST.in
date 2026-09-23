@@ -4,3 +4,4 @@ recursive-include examples *.py
 
 exclude uv.lock
 prune docs
+recursive-include gathervis/assets *.css

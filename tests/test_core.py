@@ -63,3 +63,59 @@ def test_from_file_memmap(tmp_path):
     g = gv.from_file(p, shape=(4, 8, 16), dt=0.002)
     assert isinstance(g.data, np.memmap)
     assert np.allclose(g.shot(2), d[2])
+
+
+class _Lazy:
+    """The whole contract for a lazy dataset: shape, ndim, dtype, and
+    indexing along axis 0 -- e.g. several memmaps concatenated on demand."""
+
+    def __init__(self, parts):
+        self.parts = parts
+        self.edges = np.cumsum([0] + [p.shape[0] for p in parts])
+        self.shape = (int(self.edges[-1]),) + parts[0].shape[1:]
+        self.ndim, self.dtype = len(self.shape), parts[0].dtype
+
+    def __getitem__(self, key):
+        first, rest = (key[0], key[1:]) if isinstance(key, tuple) else (key, ())
+        if isinstance(first, (int, np.integer)):
+            k = int(np.searchsorted(self.edges, first, side="right")) - 1
+            return self.parts[k][(int(first) - int(self.edges[k]),) + rest]
+        return np.stack([self[(int(i),) + rest]
+                         for i in np.arange(self.shape[0])[first]])
+
+
+def test_sample_works_on_an_index_only_lazy_array():
+    from gathervis.demo import synthetic_line
+    g = synthetic_line(ns=6, nr=40, nt=200)
+    lazy = _Lazy([np.asarray(g.data[:4]), np.asarray(g.data[4:])])
+    s = gv.from_array(lazy, src=g.geometry.src, rec=g.geometry.rec,
+                      dt=g.dt).sample(max_samples=4000, chunks=4)
+    assert s.size > 0 and np.isfinite(s).all() and np.abs(s).max() > 0
+
+
+def test_every_tab_works_on_an_index_only_lazy_array():
+    from gathervis.demo import synthetic_line
+    from gathervis.viewer import Workspace
+    g = synthetic_line(ns=6, nr=40, nt=200)
+    lazy = _Lazy([np.asarray(g.data[:4]), np.asarray(g.data[4:])])
+    ws = Workspace(gv.from_array(lazy, src=g.geometry.src,
+                                 rec=g.geometry.rec, dt=g.dt))
+    ws.browser.set_shot(5)                        # a shot in the second part
+    for tab in range(len(ws.tabs)):
+        ws.tabs.active = tab
+        ws._w_ftype.value = "band-pass"           # volume tab re-processes
+        ws._w_gain.value = "AGC"
+        ws._w_ftype.value, ws._w_gain.value = "off", "off"
+    assert ws.slices.vol.shape == (6, 40, 200)
+
+
+def test_sample_never_flattens_a_non_contiguous_array():
+    """reshape(-1) copies a non-contiguous array: 8 GB here, so the test
+    would fail by running out of memory rather than by an assert."""
+    trace = np.linspace(-1, 1, 1000, dtype=np.float32)
+    big = np.broadcast_to(trace, (2000, 1000, 1000))          # 8 GB, 4 KB real
+    s = gv.from_array(big, dt=0.002).sample(max_samples=5000, chunks=8)
+    assert 0 < s.size <= 5000 + 8 * 1000 and np.isfinite(s).all()
+    view = np.zeros((40, 30, 20), "f4").transpose(1, 0, 2)    # strided view
+    assert gv.from_array(np.ascontiguousarray(view)).sample().size == 24000
+    assert gv.from_array(view).sample().size > 0

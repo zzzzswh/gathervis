@@ -73,6 +73,25 @@ class Geometry:
         """(nr, 3) receiver positions active for shot ``ishot``."""
         return self.rec if self.shared else self.rec[ishot]
 
+    def unique_receivers(self) -> np.ndarray:
+        """Every receiver position once, ``(n, 3)``.
+
+        A per-shot geometry repeats a spread once per shot that uses it --
+        15 2-D lines of 1109 receivers over 8385 shots are 9.3 M rows for
+        16635 positions, and drawing all of them would stall the browser.
+        Consecutive shots usually share their spread, so a shot whose spread
+        equals the last one kept is skipped first (cheap), and exact
+        duplicates among the rest go after.
+        """
+        if self.shared:
+            return self.rec
+        kept, last = [], None
+        for r in self.rec:
+            if last is None or not np.array_equal(r, last):
+                kept.append(r)
+                last = r
+        return np.unique(np.concatenate(kept), axis=0)
+
     def __repr__(self):
         kind = "shared spread" if self.shared else "per-shot"
         return f"Geometry(ns={self.ns}, nr={self.nr}, {kind})"
@@ -149,7 +168,18 @@ class Gathers:
         stride: a stride touches every 4 KB disk page (i.e. reads the whole
         file), while contiguous blocks read only ~``max_samples`` values no
         matter how large the memmap is.
+
+        ``data`` need not be a numpy array. Anything with ``shape``,
+        ``ndim``, ``dtype`` and indexing along axis 0 works -- a lazy
+        concatenation of several memmaps, say -- and is sampled through that
+        indexing, still in contiguous blocks. So is any array that is not
+        C-contiguous (a transposed or strided memmap view, a broadcast
+        array): flattening one of those copies all of it.
         """
+        flags = getattr(self.data, "flags", None)
+        if (not hasattr(self.data, "reshape") or flags is None
+                or not flags["C_CONTIGUOUS"]):
+            return self._sample_indexed(max_samples, chunks)
         flat = self.data.reshape(-1)
         n = flat.shape[0]
         if n <= max_samples:
@@ -157,6 +187,26 @@ class Gathers:
         per = max_samples // chunks
         starts = np.linspace(0, n - per, chunks).astype(np.int64)
         return np.concatenate([np.asarray(flat[s:s + per]) for s in starts])
+
+    def _sample_indexed(self, max_samples, chunks):
+        """``sample`` for an array that only supports indexing: a block of
+        consecutive traces from each of up to ``chunks`` evenly spaced
+        gathers, read as ``data[i, r0:r1]``."""
+        shape = tuple(int(n) for n in self.data.shape)
+        if len(shape) < 3:                      # (trace, time): one block
+            per_row = int(np.prod(shape[1:]))
+            n = max(1, min(shape[0], -(-max_samples // max(per_row, 1))))
+            r0 = (shape[0] - n) // 2
+            return np.asarray(self.data[r0:r0 + n], dtype=np.float64).reshape(-1)
+        picks = np.unique(np.linspace(0, shape[0] - 1,
+                                      min(chunks, shape[0])).astype(np.int64))
+        per = max(1, max_samples // picks.size)
+        per_row = int(np.prod(shape[2:]))       # one trace (or one line)
+        n = max(1, min(shape[1], -(-per // max(per_row, 1))))
+        r0 = (shape[1] - n) // 2
+        return np.concatenate([
+            np.asarray(self.data[int(i), r0:r0 + n]).reshape(-1)
+            for i in picks])
 
     def __repr__(self):
         geo = f", geometry={self.geometry!r}" if self.geometry is not None else ""
