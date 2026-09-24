@@ -14,6 +14,13 @@ pick.*
 ![license](https://img.shields.io/badge/license-MIT-green)
 ![tests](https://img.shields.io/badge/tests-313%20passing-brightgreen)
 
+<img width="1192" height="720" alt="Cap 2026-09-24 at 20 37 21" src="https://github.com/user-attachments/assets/5a68c154-00cf-4cc6-9f81-db23dd3fd184" />
+<img width="1180" height="720" alt="Cap 2026-09-24 at 20 54 51" src="https://github.com/user-attachments/assets/2d66c485-0cd0-4a99-95ea-6d9d9eea0f00" />
+
+
+
+
+
 <img src="https://raw.githubusercontent.com/zzzzswh/gathervis/main/docs/images/ui_gather.png" width="820" alt="Shot gathers tab: shot navigation and view controls above the gather; display, processing and tools grouped in the sidebar"/>
 <img src="https://raw.githubusercontent.com/zzzzswh/gathervis/main/docs/images/wiggle.png" width="820" alt="Shot Shot gathers tab：wiggle demostration"/>
 <img src="https://raw.githubusercontent.com/zzzzswh/gathervis/main/docs/images/ui_slice.png" width="820" alt="Volume slices tab: three slice planes, the active one outlined, with the keys that move it"/>
@@ -21,6 +28,7 @@ pick.*
 *2-D gather QC and 3-D volume slicing, in one browser tab.*
 
 </div>
+
 
 > **💬 Feature requests welcome!** If there is anything you wish it did — a
 > display mode, a processing step, a file format — **please open an issue and
