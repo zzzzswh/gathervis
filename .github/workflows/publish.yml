@@ -1,18 +1,12 @@
 name: Publish to PyPI
 
-# Publishes whenever a GitHub release is created, and can be run manually
-# against TestPyPI first.
+# Real PyPI uploads happen ONLY from a published GitHub release, so the
+# tag/version check below always runs and a version can't be pushed twice.
+# Running the workflow by hand is a dry run against TestPyPI.
 on:
   release:
     types: [published]
   workflow_dispatch:
-    inputs:
-      target:
-        description: Where to upload
-        required: true
-        default: testpypi
-        type: choice
-        options: [testpypi, pypi]
 
 # Least privilege by default; only the publish job gets an OIDC token.
 permissions:
@@ -71,10 +65,10 @@ jobs:
           name: dist
           path: dist/
       - name: Publish to TestPyPI
-        if: github.event.inputs.target == 'testpypi'
+        if: github.event_name == 'workflow_dispatch'
         uses: pypa/gh-action-pypi-publish@release/v1
         with:
           repository-url: https://test.pypi.org/legacy/
       - name: Publish to PyPI
-        if: github.event_name == 'release' || github.event.inputs.target == 'pypi'
+        if: github.event_name == 'release'
         uses: pypa/gh-action-pypi-publish@release/v1
