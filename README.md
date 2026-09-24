@@ -15,6 +15,7 @@ pick.*
 ![tests](https://img.shields.io/badge/tests-313%20passing-brightgreen)
 
 <img src="https://raw.githubusercontent.com/zzzzswh/gathervis/main/docs/images/ui_gather.png" width="820" alt="Shot gathers tab: shot navigation and view controls above the gather; display, processing and tools grouped in the sidebar"/>
+<img src="https://raw.githubusercontent.com/zzzzswh/gathervis/main/docs/images/wiggle.png" width="820" alt="Shot Shot gathers tab：wiggle demostration"/>
 <img src="https://raw.githubusercontent.com/zzzzswh/gathervis/main/docs/images/ui_slice.png" width="820" alt="Volume slices tab: three slice planes, the active one outlined, with the keys that move it"/>
 
 *2-D gather QC and 3-D volume slicing, in one browser tab.*

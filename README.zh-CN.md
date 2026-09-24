@@ -13,6 +13,7 @@
 ![tests](https://img.shields.io/badge/tests-313%20passing-brightgreen)
 
 <img src="https://raw.githubusercontent.com/zzzzswh/gathervis/main/docs/images/ui_gather.png" width="820" alt="Shot gathers 页：道集上方是翻炮与视图控件，侧栏按显示、处理、工具分组"/>
+<img src="https://raw.githubusercontent.com/zzzzswh/gathervis/main/docs/images/wiggle.png" width="820" alt="Shot gathers 页：wiggle 显示方法，自定义道密度"/>
 <img src="https://raw.githubusercontent.com/zzzzswh/gathervis/main/docs/images/ui_slice.png" width="820" alt="Volume slices 页：三个切片平面，当前切片有描边，上方是移动切片的按键"/>
 
 *二维道集 QC 与三维体切片，同一个浏览器页面。*
