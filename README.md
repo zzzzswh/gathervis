@@ -620,47 +620,6 @@ volume instead, or declare other semantics explicitly with `axes=`. `axes`
 says what the array *is*, `view` says how to *look* at it, and `sort` (in the
 app) says in what order — the three are independent.
 
-## Design notes
-
-* **Lazy loading.** Data opens as a memmap; browsing a shot reads only that
-  shot's bytes, slicing reads only that slice, and filtering and spectra apply
-  to the displayed gather only. Sorting by acquisition order or receiver line
-  is lazy too (a reshape, a slice); only offset/azimuth order materialises the
-  shot — one shot, not the file.
-* **Wire format.** Panels are stride-decimated to a pixel budget and quantized
-  to uint8 server-side before being sent to the browser.
-* **Ordering separate from processing.** A sort only changes trace order and
-  returns the shot's own traces; the filter/gain chain then runs on the result,
-  so 2-D and 3-D shots share one processing path.
-* **Two rendering paths.** 2-D panels are bokeh images or wiggles, volumes are
-  plotly WebGL slice planes, both fed by the same decimate → uint8 pipeline.
-* **Export path independent of display.** Image export bypasses decimation:
-  the same processed array is rasterized at native resolution and encoded as a
-  PNG with numpy and stdlib zlib, adding no plotting or imaging dependency.
-* **One look, in one place.** `gathervis/theme.py` holds the design (a
-  Panel design plus one stylesheet for every widget), the page template and
-  the figure style; the viewer code says what is on screen, the theme what
-  it looks like. System fonts, one accent colour used only for state.
-* **One session per browser tab.** A bokeh model belongs to exactly one
-  document, so every session builds its own workspace over the same (lazy)
-  data rather than sharing figures.
-* **Interaction state preserved.** Sliders update while dragging; the 3-D
-  camera, stretch factors and drawn windows survive updates. Every 2-D panel
-  has x-only / y-only wheel zoom and a client-side cursor readout (trace, time,
-  amplitude under the mouse); the spectrum panels have the same readout and a
-  toggleable crosshair.
-
-## Roadmap
-
-**M2** (remaining): synced comparison panels · client-side volume cache for
-cigvis-grade slice scrubbing (AGC / trace balance / CuPy: done). **3-D
-acquisition QC** (remaining): shot-record time slices over the receiver grid ·
-offset-azimuth rose diagrams per bin (3-D shot sorting, CMP fold map: done). **M3** (remaining): header indexing, gather extraction by any key
-(SEG-Y import: done). **M4** (remaining):
-common-offset/time slicing (event picking, NMO preview, velocity spectra and
-hand-picked velocity analysis: done). Full plan:
-[`docs/plan.md`](https://github.com/zzzzswh/gathervis/blob/main/docs/plan.md). *And whatever you ask for — see the note at
-the top.*
 
 ## Acknowledgements
 
