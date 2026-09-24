@@ -4,7 +4,8 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "gathervis"
-version = "0.16.0"
+# version lives in gathervis/__init__.py (__version__); read statically, no import
+dynamic = ["version"]
 description = "Web viewer for pre-stack seismic data: lazy loading of huge files, SEG-Y import, geometry-linked shot browsing, 3-D volume slicing, filters/AGC, spectra and f-k, first-break picking."
 readme = "README.md"
 license = "MIT"
@@ -63,6 +64,9 @@ torch = { index = "pytorch-cu121" }
 name = "pytorch-cu121"
 url = "https://download.pytorch.org/whl/cu121"
 explicit = true
+
+[tool.setuptools.dynamic]
+version = { attr = "gathervis.__version__" }
 
 [tool.setuptools.packages.find]
 include = ["gathervis*"]

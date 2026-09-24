@@ -14,6 +14,10 @@ on:
         type: choice
         options: [testpypi, pypi]
 
+# Least privilege by default; only the publish job gets an OIDC token.
+permissions:
+  contents: read
+
 jobs:
   test:
     runs-on: ubuntu-latest
@@ -39,13 +43,14 @@ jobs:
       - run: pip install build twine
       - run: python -m build
       - run: python -m twine check --strict dist/*
-      # The tag must match the version in pyproject.toml, or the upload
-      # fails later with a confusing 400. Catch it here instead.
+      # The tag must match gathervis.__version__, or the upload fails later
+      # with a confusing 400. Read it from the built wheel's filename, i.e.
+      # exactly what is about to be uploaded. Catch it here instead.
       - name: Check the tag matches __version__
         if: github.event_name == 'release'
         run: |
           tag="${GITHUB_REF_NAME#v}"
-          ver=$(python -c "import tomllib,pathlib;print(tomllib.loads(pathlib.Path('pyproject.toml').read_text())['project']['version'])")
+          ver=$(ls dist/*.whl | sed -E 's|.*/gathervis-([^-]+)-.*|\1|')
           test "$tag" = "$ver" || { echo "tag $tag != version $ver"; exit 1; }
       - uses: actions/upload-artifact@v4
         with:
@@ -55,7 +60,9 @@ jobs:
   publish:
     needs: build
     runs-on: ubuntu-latest
-    environment: release
+    environment:
+      name: release              # must match the Trusted Publisher on PyPI
+      url: https://pypi.org/p/gathervis
     permissions:
       id-token: write          # required for trusted publishing; no token stored
     steps:
